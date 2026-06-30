@@ -50,6 +50,14 @@ export function tradingDay(nowMs: number, currency: Currency): string {
 
 interface Agg { day: string; dailyPnl: number; lossStreak: number; }
 
+/** Serializable snapshot for file-based durability across restarts. */
+export interface TrackerSnapshot {
+  baseline: [string, number][];
+  agg: [string, Agg][];
+  history: [string, RoundTrip[]][];
+  violationDays: [string, string[]][];
+}
+
 const TRADES_CAP = 2000;   // bounded history; promotion needs ~50, so this is plenty
 
 export class InMemoryTradeTracker implements TradeTracker {
@@ -115,5 +123,23 @@ export class InMemoryTradeTracker implements TradeTracker {
 
   dailyLossViolationCount(strategyId: number, mode: TradingMode): number {
     return this.violationDays.get(this.aggKey(strategyId, mode))?.size ?? 0;
+  }
+
+  // --- durability ---
+  dump(): TrackerSnapshot {
+    return {
+      baseline: [...this.baseline.entries()],
+      agg: [...this.agg.entries()],
+      history: [...this.history.entries()],
+      violationDays: [...this.violationDays.entries()].map(([k, set]) => [k, [...set]]),
+    };
+  }
+
+  restore(s: TrackerSnapshot): void {
+    // maps are readonly fields — mutate in place rather than reassign.
+    this.baseline.clear(); for (const [k, v] of s.baseline) this.baseline.set(k, v);
+    this.agg.clear(); for (const [k, v] of s.agg) this.agg.set(k, v);
+    this.history.clear(); for (const [k, v] of s.history) this.history.set(k, v);
+    this.violationDays.clear(); for (const [k, arr] of s.violationDays) this.violationDays.set(k, new Set(arr));
   }
 }

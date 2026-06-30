@@ -22,6 +22,15 @@ export interface OrderRepository {
   getEquitySnapshots(strategyId: number, mode: TradingMode): EquitySnapshot[];   // chronological
 }
 
+/** Serializable snapshot of the whole repo — for file-based durability across restarts. */
+export interface RepoSnapshot {
+  orders: Order[];
+  byIdem: [string, string][];
+  fills: [string, Fill[]][];
+  positions: Position[];
+  equity: EquitySnapshot[];
+}
+
 export class InMemoryRepository implements OrderRepository {
   private orders = new Map<string, Order>();
   private byIdem = new Map<string, string>();           // idempotencyKey -> orderId
@@ -80,5 +89,24 @@ export class InMemoryRepository implements OrderRepository {
     return [...this.equity.values()]
       .filter((s) => s.strategyId === strategyId && s.mode === mode)
       .sort((a, b) => a.day.localeCompare(b.day));
+  }
+
+  // --- durability ---
+  dump(): RepoSnapshot {
+    return {
+      orders: [...this.orders.values()],
+      byIdem: [...this.byIdem.entries()],
+      fills: [...this.fills.entries()],
+      positions: [...this.positions.values()],
+      equity: [...this.equity.values()],
+    };
+  }
+
+  restore(s: RepoSnapshot): void {
+    this.orders = new Map(s.orders.map((o) => [o.id, o]));
+    this.byIdem = new Map(s.byIdem);
+    this.fills = new Map(s.fills);
+    this.positions = new Map(s.positions.map((p) => [this.posKey(p.strategyId, p.symbol, p.mode), p]));
+    this.equity = new Map(s.equity.map((e) => [`${e.strategyId}:${e.mode}:${e.day}`, e]));
   }
 }

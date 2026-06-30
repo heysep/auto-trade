@@ -65,6 +65,21 @@ export class MovingAverageCrossStrategy implements Strategy {
     }
     return null;   // equality, or already at target -> hold
   }
+
+  // Persist the price window so a restart doesn't cold-start the indicator while holding
+  // a restored position (which would blind exits during warm-up).
+  serialize(): unknown {
+    return { prices: [...this.prices], lastSeenTs: this.lastSeenTs };
+  }
+
+  deserialize(state: unknown): void {
+    const s = state as { prices?: unknown; lastSeenTs?: unknown };
+    if (Array.isArray(s.prices) && s.prices.every((p) => typeof p === 'number')) {
+      this.prices.length = 0;
+      this.prices.push(...(s.prices as number[]).slice(-this.cfg.slowPeriod));
+    }
+    if (typeof s.lastSeenTs === 'number') this.lastSeenTs = s.lastSeenTs;
+  }
 }
 
 /** Simple moving average of the last `period` elements of `xs`. */

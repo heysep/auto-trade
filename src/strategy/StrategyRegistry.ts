@@ -47,4 +47,16 @@ export class StrategyRegistry {
     e.status = status;
     return view(e);
   }
+
+  // --- durability: persist statuses so an API promotion survives a restart ---
+  dump(): [number, StrategyStatus][] {
+    return [...this.entries.entries()].map(([id, e]) => [id, e.status]);
+  }
+
+  restore(statuses: [number, StrategyStatus][]): void {
+    for (const [id, status] of statuses) {
+      const e = this.entries.get(id);   // only for already-registered strategies
+      if (e) e.status = status;
+    }
+  }
 }

@@ -8,6 +8,7 @@ import { MarketDataWorker, type WatchedSymbol, type Market } from './market/Mark
 import { MarketCalendarService } from './market/MarketCalendar.js';
 import { QuoteBook } from './market/PriceSource.js';
 import { InMemoryRepository } from './persistence/repository.js';
+import { FileStatePersistence } from './persistence/StatePersistence.js';
 import { PaperBroker } from './broker/PaperBroker.js';
 import { RiskManager, type RiskContext } from './risk/RiskManager.js';
 import { InMemoryTradeTracker } from './risk/TradeTracker.js';
@@ -31,6 +32,8 @@ import type { Currency } from './domain/types.js';
 const HTTP_PORT = Number(process.env.PORT ?? 3000);
 // Absolute so a launch from a different cwd can't read/write a different kill-switch file.
 const HALT_FILE = resolve(process.env.HALT_FILE ?? './halt-state.json');
+const STATE_FILE = resolve(process.env.STATE_FILE ?? './trading-state.json');
+const STATE_SAVE_MS = 60_000;
 
 const STRATEGY_CAPITAL = 10_000_000;
 const RISK_LIMITS = { maxPositionPct: 30, dailyMaxLoss: 500_000, maxConsecutiveLosses: 5 };
@@ -44,6 +47,7 @@ export function bootstrap() {
   const logger = new InMemoryEventLogger();
 
   const tracker = new InMemoryTradeTracker();
+  const statePersistence = new FileStatePersistence(STATE_FILE);
   const haltSwitch = new HaltSwitch({ store: new FileHaltStore(HALT_FILE) });   // durable kill switch
   const registry = new StrategyRegistry();
   const paperBroker = new PaperBroker(repo, book, { tracker, isHalted: () => haltSwitch.halted });
@@ -105,6 +109,12 @@ export function bootstrap() {
     registry.register(s, `strategy-${s.id}`, 'PAPER_TESTING');
   }
 
+  // Restore prior run's orders/positions/equity/streaks + registry statuses + strategy
+  // indicator windows, now that strategies are registered. Throws on a version mismatch.
+  if (statePersistence.load(repo, tracker, { registry, strategies })) {
+    console.log('restored trading state from disk');
+  }
+
   // Dedupe so two strategies sharing a symbol don't produce a duplicate batch-fetch entry.
   const seenSymbols = new Set<string>();
   const watched: WatchedSymbol[] = [];
@@ -147,28 +157,35 @@ export function bootstrap() {
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
   return {
-    client, repo, book, logger, tracker, haltSwitch, registry, system, server,
+    client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
   };
 }
 
 export async function main(): Promise<void> {
-  const { worker, reconciliation, server, system } = bootstrap();
+  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
   if (system.haltStatus().halted) {
     console.warn(`⚠️ kill switch is SET (${system.haltStatus().reason}); brokers will refuse orders until /api/resume`);
   }
   await reconciliation.reconcile().catch((err) => console.error('reconcile failed:', err));
-  // Equity snapshots now accrue via SnapshotScheduler (one point per market day, driven
-  // off the price-tick path). ⚠️ Still in-memory: a durable repo is required for the
-  // promotion data to survive restarts — until then the curve resets each run.
   await server.listen({ port: HTTP_PORT, host: '127.0.0.1' });   // localhost only; front with an authed proxy
   console.log(`API listening on 127.0.0.1:${HTTP_PORT}`);
+
+  // Persist state periodically + on shutdown so a restart resumes from disk.
+  const saveState = () => {
+    try { statePersistence.save(repo, tracker, { registry, strategies }); }
+    catch (e) { console.error('state save failed:', e); }
+  };
+  const saveTimer = setInterval(saveState, STATE_SAVE_MS);
+  saveTimer.unref?.();
 
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(saveTimer);
+    saveState();
     worker.stop();
     await server.close().catch(() => { /* already closing */ });
   };
