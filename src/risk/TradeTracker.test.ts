@@ -57,6 +57,15 @@ describe('InMemoryTradeTracker', () => {
     expect(t.consecutiveLosses(1, 'PAPER')).toBe(1);               // streak survives the day rollover
   });
 
+  it('counts distinct daily-loss breach days (idempotent per day)', () => {
+    const t = new InMemoryTradeTracker();
+    t.markDailyLoss(1, 'PAPER', 'KRW', DAY_A);
+    t.markDailyLoss(1, 'PAPER', 'KRW', DAY_A);   // same day -> still 1
+    t.markDailyLoss(1, 'PAPER', 'KRW', DAY_B);
+    expect(t.dailyLossViolationCount(1, 'PAPER')).toBe(2);
+    expect(t.dailyLossViolationCount(2, 'PAPER')).toBe(0);
+  });
+
   it('uses the market timezone for the day boundary (KRW=Seoul, USD=New_York)', () => {
     // 2026-06-30T20:00:00Z = 2026-07-01 05:00 KST but still 2026-06-30 16:00 ET
     const ms = Date.parse('2026-06-30T20:00:00Z');

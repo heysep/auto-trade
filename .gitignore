@@ -21,6 +21,7 @@ venv/
 
 # Probe / runtime artifacts (may contain account-shaped data)
 docs/probe-result.json
+halt-state.json
 logs/
 *.log
 

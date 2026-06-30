@@ -1,6 +1,7 @@
 // Composition root: wires the paper-trading pipeline end to end.
 // LIVE is intentionally NOT wired here — promotion is a deliberate, separate step.
 
+import { resolve } from 'node:path';
 import { config } from './config/env.js';
 import { TossApiClient } from './toss/TossApiClient.js';
 import { MarketDataWorker, type WatchedSymbol, type Market } from './market/MarketDataWorker.js';
@@ -14,9 +15,22 @@ import { OrderManager } from './order/OrderManager.js';
 import { ReconciliationService } from './order/ReconciliationService.js';
 import { StrategyEngine } from './strategy/StrategyEngine.js';
 import { ThresholdStrategy } from './strategy/ThresholdStrategy.js';
+import { MovingAverageCrossStrategy } from './strategy/MovingAverageCrossStrategy.js';
+import { StrategyRegistry } from './strategy/StrategyRegistry.js';
 import type { Strategy } from './strategy/Strategy.js';
 import { InMemoryEventLogger } from './observability/EventLogger.js';
+import { HaltSwitch } from './app/HaltSwitch.js';
+import { FileHaltStore } from './app/HaltStore.js';
+import { TradingSystem } from './app/TradingSystem.js';
+import { buildServer } from './api/server.js';
+import { EquityRecorder } from './performance/EquityRecorder.js';
+import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
+import { PerformanceService } from './performance/PerformanceService.js';
 import type { Currency } from './domain/types.js';
+
+const HTTP_PORT = Number(process.env.PORT ?? 3000);
+// Absolute so a launch from a different cwd can't read/write a different kill-switch file.
+const HALT_FILE = resolve(process.env.HALT_FILE ?? './halt-state.json');
 
 const STRATEGY_CAPITAL = 10_000_000;
 const RISK_LIMITS = { maxPositionPct: 30, dailyMaxLoss: 500_000, maxConsecutiveLosses: 5 };
@@ -30,7 +44,9 @@ export function bootstrap() {
   const logger = new InMemoryEventLogger();
 
   const tracker = new InMemoryTradeTracker();
-  const paperBroker = new PaperBroker(repo, book, { tracker });
+  const haltSwitch = new HaltSwitch({ store: new FileHaltStore(HALT_FILE) });   // durable kill switch
+  const registry = new StrategyRegistry();
+  const paperBroker = new PaperBroker(repo, book, { tracker, isHalted: () => haltSwitch.halted });
   const risk = new RiskManager();
 
   const riskContext = (strategy: Strategy, symbol: string): RiskContext => {
@@ -40,16 +56,22 @@ export function bootstrap() {
       const q = book.getQuote(pos.symbol);
       return q ? s + pos.quantity * (q.last - pos.avgPrice) : s;
     }, 0);
+    const dailyRealizedPnl = tracker.dailyRealizedPnl(strategy.id, strategy.mode, strategy.currency, Date.now());
+    // Record a daily-max-loss breach (realized + open) so it counts against §7 promotion.
+    if (dailyRealizedPnl + unrealizedPnl <= -RISK_LIMITS.dailyMaxLoss) {
+      tracker.markDailyLoss(strategy.id, strategy.mode, strategy.currency, Date.now());
+    }
     return {
       mode: strategy.mode,
-      status: 'PAPER_TESTING',
+      // Single source of truth: the API-mutable registry status feeds the live-enable gate.
+      status: registry.get(strategy.id)?.status ?? 'PAPER_TESTING',
       capital: STRATEGY_CAPITAL,
       limits: RISK_LIMITS,
       positions,
       openOrdersForSymbol: repo.getOpenOrdersBySymbol(symbol, strategy.mode).length,
       // Live, round-trip + market-tz derived halts (no longer hardcoded 0).
       // ⚠️ In-memory: resets on restart — rederive from persisted fills when DB lands.
-      dailyRealizedPnl: tracker.dailyRealizedPnl(strategy.id, strategy.mode, strategy.currency, Date.now()),
+      dailyRealizedPnl,
       unrealizedPnl,
       consecutiveLosses: tracker.consecutiveLosses(strategy.id, strategy.mode),
     };
@@ -57,7 +79,7 @@ export function bootstrap() {
 
   const orderManager = new OrderManager({
     brokerFor: () => paperBroker,     // paper only here
-    risk, riskContext, logger,
+    risk, riskContext, logger, haltSwitch,
   });
 
   const engine = new StrategyEngine({
@@ -73,38 +95,91 @@ export function bootstrap() {
       id: 1, symbol: '005930', currency: 'KRW', mode: 'PAPER',
       buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000,
     }),
+    new MovingAverageCrossStrategy({
+      id: 2, symbol: '000660', currency: 'KRW', mode: 'PAPER',
+      fastPeriod: 5, slowPeriod: 20, orderNotional: 1_000_000,
+    }),
   ];
-  for (const s of strategies) engine.register(s);
+  for (const s of strategies) {
+    engine.register(s);
+    registry.register(s, `strategy-${s.id}`, 'PAPER_TESTING');
+  }
 
-  const watched: WatchedSymbol[] = strategies.flatMap((s) =>
-    [...s.symbols].map((symbol) => ({ symbol, market: marketOf(s.currency) })),
-  );
+  // Dedupe so two strategies sharing a symbol don't produce a duplicate batch-fetch entry.
+  const seenSymbols = new Set<string>();
+  const watched: WatchedSymbol[] = [];
+  for (const s of strategies) {
+    for (const symbol of s.symbols) {
+      if (seenSymbols.has(symbol)) continue;
+      seenSymbols.add(symbol);
+      watched.push({ symbol, market: marketOf(s.currency) });
+    }
+  }
 
   const calendar = new MarketCalendarService({ fetchCalendar: (m) => client.getMarketCalendar(m) });
+
+  const equityRecorder = new EquityRecorder({ repo, book, capitalFor: () => STRATEGY_CAPITAL });
+  const snapshotScheduler = new SnapshotScheduler({
+    recorder: equityRecorder,
+    targets: () => strategies.map((s) => ({ id: s.id, mode: s.mode, currency: s.currency })),
+    onSkip: (t) => logger.log({ type: 'SNAPSHOT_SKIPPED', strategyId: t.id, message: 'open position lacks a quote', at: Date.now() }),
+  });
 
   const worker = new MarketDataWorker({
     // /prices unwraps to a bare array — re-wrap into the { result } shape the worker reads.
     fetchPrices: async (symbols) => ({ result: await client.getPrices(symbols) }),
     getWatched: () => watched,
     book,
-    onTick: (q) => engine.onTick(q),
+    // Sample each strategy off its OWN market's tick (q.currency) at the tick's time (q.ts).
+    onTick: async (q) => { await engine.onTick(q); snapshotScheduler.maybeSnapshot(q.ts, q.currency); },
     isMarketOpen: (m) => calendar.isMarketOpen(m),
     intervalMs: 2000,
     onError: (err) => logger.log({ type: 'MARKETDATA_ERROR', message: String(err), at: Date.now() }),
   });
 
   const reconciliation = new ReconciliationService(paperBroker, repo, logger, { mode: 'PAPER', tracker });
+  const perf = new PerformanceService(repo, tracker, () => STRATEGY_CAPITAL);
+  const system = new TradingSystem({
+    repo, book, registry, logger, haltSwitch,
+    // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
+    promotionInputFor: (id) => perf.promotionInput(id, 'PAPER'),
+  });
+  const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
-  return { client, repo, book, logger, tracker, paperBroker, engine, worker, reconciliation };
+  return {
+    client, repo, book, logger, tracker, haltSwitch, registry, system, server,
+    paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
+  };
 }
 
 export async function main(): Promise<void> {
-  const { worker, reconciliation } = bootstrap();
+  const { worker, reconciliation, server, system } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
+  if (system.haltStatus().halted) {
+    console.warn(`⚠️ kill switch is SET (${system.haltStatus().reason}); brokers will refuse orders until /api/resume`);
+  }
   await reconciliation.reconcile().catch((err) => console.error('reconcile failed:', err));
-  process.on('SIGINT', () => worker.stop());
-  process.on('SIGTERM', () => worker.stop());
-  await worker.start();
+  // Equity snapshots now accrue via SnapshotScheduler (one point per market day, driven
+  // off the price-tick path). ⚠️ Still in-memory: a durable repo is required for the
+  // promotion data to survive restarts — until then the curve resets each run.
+  await server.listen({ port: HTTP_PORT, host: '127.0.0.1' });   // localhost only; front with an authed proxy
+  console.log(`API listening on 127.0.0.1:${HTTP_PORT}`);
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    worker.stop();
+    await server.close().catch(() => { /* already closing */ });
+  };
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
+
+  try {
+    await worker.start();          // blocks until stop()
+  } finally {
+    await server.close().catch(() => { /* */ });   // tie server lifetime to the worker loop
+  }
 }
 
 const entry = process.argv[1] ?? '';
