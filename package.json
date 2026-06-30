@@ -1,0 +1,24 @@
+{
+  "name": "auto-trading",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Toss Securities Open API paper-trading / auto-trading platform",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "fastify": "^5.1.0"
+  },
+  "scripts": {
+    "probe": "node scripts/probe-live-spec.mjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^20.16.0"
+  }
+}

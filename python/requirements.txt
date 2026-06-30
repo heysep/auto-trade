@@ -1,0 +1,5 @@
+# Python side (hybrid): backtesting + performance/indicator math.
+# Used by PerformanceAnalyzer (MDD/Profit Factor/win-rate) and backtests.
+pandas>=2.2
+numpy>=1.26
+psycopg[binary]>=3.2     # PostgreSQL access

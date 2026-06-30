@@ -1,0 +1,30 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Probe / runtime artifacts (may contain account-shaped data)
+docs/probe-result.json
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
