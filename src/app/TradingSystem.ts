@@ -6,10 +6,9 @@ import type { HaltSwitch } from './HaltSwitch.js';
 import type { Position, Order, Quote, TradingMode, StrategyStatus } from '../domain/types.js';
 import { evaluatePromotion, type PromotionInput } from '../strategy/PromotionGate.js';
 import type { SymbolCatalog } from '../market/SymbolCatalog.js';
-import type { TossStock, TossCandle } from '../toss/types.js';
+import type { TossStock, TossCandle, ChartCandle } from '../toss/types.js';
 import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
 import { BacktestEngine } from '../backtest/BacktestEngine.js';
-import { parseNum } from '../domain/money.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
 import type { StrategyDeployer } from './StrategyDeployer.js';
 
@@ -41,7 +40,7 @@ export interface TradingSystemDeps {
   /** Searchable stock symbol catalog. Omitted => searchSymbols returns []. */
   symbolCatalog?: SymbolCatalog;
   /** Candle fetcher. Omitted => candles returns []. */
-  getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
+  getCandles?: (symbol: string, interval: '1m' | '1d') => Promise<TossCandle[]>;
   /** Dynamic strategy deployer. Omitted => deploy() returns 400. */
   deployer?: StrategyDeployer;
 }
@@ -129,9 +128,18 @@ export class TradingSystem {
     return this.deps.symbolCatalog.search(query);
   }
 
-  async candles(symbol: string, interval: string): Promise<TossCandle[]> {
+  async candles(symbol: string, interval: '1m' | '1d'): Promise<ChartCandle[]> {
     if (!this.deps.getCandles) return [];
-    return this.deps.getCandles(symbol, interval);
+    const raw = await this.deps.getCandles(symbol, interval);
+    return raw
+      .map((c) => ({
+        time: Math.floor(Date.parse(c.timestamp) / 1000),
+        open: Number(c.openPrice),
+        high: Number(c.highPrice),
+        low: Number(c.lowPrice),
+        close: Number(c.closePrice),
+      }))
+      .filter((c) => !Number.isNaN(c.time));
   }
 
   /** Deploy a dynamic strategy. Returns 400 if fields missing or no deployer configured. */
@@ -161,9 +169,19 @@ export class TradingSystem {
     rejected: number;
     markers: { time: number; side: string; price: number }[];
   }> {
-    const { symbol, spec, interval = '1D', capital = 10_000_000 } = input;
-    const tossCandles = await this.candles(symbol, interval);
-    const bars = tossCandles.map((c) => ({ ts: c.time, price: parseNum(c.close) }));
+    const { symbol, spec, capital = 10_000_000 } = input;
+    const interval: '1m' | '1d' = (input.interval === '1m' || input.interval === '1d') ? input.interval : '1d';
+    const chartCandles = await this.candles(symbol, interval);
+    // Sort ascending by time (Toss may return newest-first); dedup to satisfy strict-increasing check.
+    const seen = new Set<number>();
+    const bars = [...chartCandles]
+      .sort((a, b) => a.time - b.time)
+      .filter((c) => {
+        if (seen.has(c.time) || !Number.isFinite(c.close) || c.close <= 0) return false;
+        seen.add(c.time);
+        return true;
+      })
+      .map((c) => ({ ts: c.time, price: c.close }));
     const strategy = buildStrategy(1, symbol, 'KRW', 'PAPER', spec);
     const engine = new BacktestEngine();
     const result = await engine.run(strategy, bars, { capital, currency: 'KRW' });

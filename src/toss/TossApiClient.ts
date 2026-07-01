@@ -10,7 +10,7 @@ import { TokenManager } from './TokenManager.js';
 import { REQUEST_TIMEOUT_MS, RateLimitError, parseBody, unwrap } from './http.js';
 import type {
   OrderCreateRequest, TossOrderCreateResponse, TossOrder, TossOrdersList, TossMarketCalendar,
-  TossPriceItem, TossStock, TossCandle,
+  TossPriceItem, TossStock, TossCandle, TossCandlePage,
 } from './types.js';
 
 const PREFIX = '/api/v1';
@@ -65,14 +65,16 @@ export class TossApiClient {
   getMarketCalendar(market: 'KR' | 'US'): Promise<TossMarketCalendar> {
     return this.request(`${PREFIX}/market-calendar/${market}`);
   }
-  // ⚠️ confirm exact query params + response field names against live before production use
-  getStocks(): Promise<TossStock[]> {
-    return this.request(`${PREFIX}/stocks`);
+  // Confirmed via openapi.json 2026-07. `symbols` is REQUIRED (comma-separated, max 200).
+  getStocks(symbols: string[]): Promise<TossStock[]> {
+    return this.request(`${PREFIX}/stocks?symbols=${symbols.map(encodeURIComponent).join(',')}`);
   }
-  getCandles(symbol: string, interval: string): Promise<TossCandle[]> {
-    return this.request(
-      `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`,
+  // Confirmed via openapi.json 2026-07. interval enum: '1m' | '1d'. count default 100, max 200.
+  async getCandles(symbol: string, interval: '1m' | '1d', count = 200): Promise<TossCandle[]> {
+    const page = await this.request<TossCandlePage>(
+      `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&count=${count}&adjusted=true`,
     );
+    return page.candles ?? [];
   }
 
   // --- writes (used by LiveBroker only) ---

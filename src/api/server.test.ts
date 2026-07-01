@@ -13,7 +13,7 @@ import { WatchList } from '../market/WatchList.js';
 import { StrategyDeployer } from '../app/StrategyDeployer.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote } from '../domain/types.js';
-import type { TossCandle, TossStock } from '../toss/types.js';
+import type { TossCandle, TossStock, ChartCandle } from '../toss/types.js';
 import type { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
 
@@ -26,7 +26,7 @@ function harness(opts: {
   server?: ServerOptions;
   promotionInputFor?: (id: number) => PromotionInput;
   symbolCatalog?: SymbolCatalog;
-  getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
+  getCandles?: (symbol: string, interval: '1m' | '1d') => Promise<TossCandle[]>;
   /** When true, harness builds a StrategyEngine + WatchList + StrategyDeployer sharing the same registry as the system. */
   withDeployer?: boolean;
 } = {}) {
@@ -156,13 +156,20 @@ describe('HTTP API', () => {
       { symbol: '005930', name: '삼성전자', market: 'KR' },
       { symbol: '000660', name: 'SK하이닉스', market: 'KR' },
     ];
+    // Raw TossCandle shape (returned by getCandles dep); system.candles() normalises to ChartCandle.
     const CANDLES: TossCandle[] = [
-      { time: 1_000_000, open: '70000', high: '72000', low: '69000', close: '71000' },
+      {
+        timestamp: '2026-03-25T09:00:00+09:00',
+        openPrice: '70000',
+        highPrice: '72000',
+        lowPrice: '69000',
+        closePrice: '71000',
+      },
     ];
 
     function marketHarness() {
       const catalog = new SymbolCatalog(async () => STOCKS);
-      const getCandles = async (_s: string, _i: string): Promise<TossCandle[]> => CANDLES;
+      const getCandles = async (_s: string, _i: '1m' | '1d'): Promise<TossCandle[]> => CANDLES;
       return harness({ symbolCatalog: catalog, getCandles });
     }
 
@@ -182,13 +189,15 @@ describe('HTTP API', () => {
       expect(res.json<TossStock[]>()).toHaveLength(2);
     });
 
-    it('/api/market/candles?symbol=005930 returns the stub array', async () => {
+    it('/api/market/candles?symbol=005930 returns ChartCandle[] with numeric OHLC', async () => {
       const { app } = marketHarness();
       const res = await app.inject({ method: 'GET', url: '/api/market/candles?symbol=005930' });
       expect(res.statusCode).toBe(200);
-      const body = res.json<TossCandle[]>();
+      const body = res.json<ChartCandle[]>();
       expect(body).toHaveLength(1);
-      expect(body[0]?.close).toBe('71000');
+      // close is a number (string was normalised server-side)
+      expect(body[0]?.close).toBe(71000);
+      expect(typeof body[0]?.time).toBe('number');
     });
 
     it('/api/market/candles without symbol returns 400', async () => {
@@ -196,6 +205,19 @@ describe('HTTP API', () => {
       const res = await app.inject({ method: 'GET', url: '/api/market/candles' });
       expect(res.statusCode).toBe(400);
       expect(res.json<{ error: string }>().error).toMatch(/symbol/);
+    });
+
+    it('/api/market/candles with invalid interval returns 400', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/candles?symbol=005930&interval=5m' });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/interval/);
+    });
+
+    it('/api/market/candles accepts interval=1m', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/candles?symbol=005930&interval=1m' });
+      expect(res.statusCode).toBe(200);
     });
 
     it('/api/market/symbols returns [] when no catalog is wired', async () => {
@@ -216,11 +238,12 @@ describe('HTTP API', () => {
   describe('backtest', () => {
     // Rising-then-falling series: price below buyBelow triggers BUY on bar 0 (filled bar 1),
     // then price above sellAbove triggers SELL on bar 2 (filled bar 3) → tradeCount = 1.
+    // Timestamps chosen so Date.parse(t)/1000 = 1000, 2000, 3000, 4000 (epoch seconds).
     const BT_CANDLES: TossCandle[] = [
-      { time: 1000, open: '60000', high: '61000', low: '59000', close: '60000' },
-      { time: 2000, open: '60000', high: '61000', low: '59000', close: '60000' },
-      { time: 3000, open: '85000', high: '86000', low: '84000', close: '85000' },
-      { time: 4000, open: '85000', high: '86000', low: '84000', close: '85000' },
+      { timestamp: '1970-01-01T00:16:40.000Z', openPrice: '60000', highPrice: '61000', lowPrice: '59000', closePrice: '60000' },
+      { timestamp: '1970-01-01T00:33:20.000Z', openPrice: '60000', highPrice: '61000', lowPrice: '59000', closePrice: '60000' },
+      { timestamp: '1970-01-01T00:50:00.000Z', openPrice: '85000', highPrice: '86000', lowPrice: '84000', closePrice: '85000' },
+      { timestamp: '1970-01-01T01:06:40.000Z', openPrice: '85000', highPrice: '86000', lowPrice: '84000', closePrice: '85000' },
     ];
 
     const SPEC = {

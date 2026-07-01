@@ -26,6 +26,7 @@ import { TradingSystem } from './app/TradingSystem.js';
 import { StrategyDeployer } from './app/StrategyDeployer.js';
 import { WatchList } from './market/WatchList.js';
 import { SymbolCatalog } from './market/SymbolCatalog.js';
+import { KRX_SYMBOLS } from './market/krxSymbols.js';
 import { buildServer } from './api/server.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
@@ -158,7 +159,8 @@ export function bootstrap() {
 
   const reconciliation = new ReconciliationService(paperBroker, repo, logger, { mode: 'PAPER', tracker });
   const perf = new PerformanceService(repo, tracker, () => STRATEGY_CAPITAL);
-  const symbolCatalog = new SymbolCatalog(() => client.getStocks());
+  // Symbol search uses a static KRX list — Toss /stocks needs explicit symbols (no list-all endpoint).
+  const symbolCatalog = new SymbolCatalog(async () => KRX_SYMBOLS);
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.

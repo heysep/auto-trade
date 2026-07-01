@@ -135,7 +135,11 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
   app.get('/api/market/candles', async (req, reply) => {
     const q = req.query as { symbol?: string; interval?: string };
     if (!q.symbol) return reply.code(400).send({ error: 'symbol is required' });
-    return system.candles(q.symbol, q.interval ?? '1D');
+    const interval = q.interval ?? '1d';
+    if (interval !== '1m' && interval !== '1d') {
+      return reply.code(400).send({ error: "interval must be '1m' or '1d'" });
+    }
+    return system.candles(q.symbol, interval);
   });
 
   // --- logs ---
@@ -441,17 +445,17 @@ function selectSymbol(sym) {
   });
   $('#chart-hint').style.display = 'none';
   updateButtons();
-  jfetch('/api/market/candles?symbol=' + encodeURIComponent(sym)).then(function(candles) {
+  // Server returns ChartCandle[] with numeric OHLC and time in epoch seconds — no coercion needed.
+  jfetch('/api/market/candles?symbol=' + encodeURIComponent(sym) + '&interval=1d').then(function(candles) {
     if (!Array.isArray(candles)) return;
-    var sorted = candles.map(function(c) {
-      return { time: normTime(c.time), open: +c.open, high: +c.high, low: +c.low, close: +c.close };
-    }).sort(function(a, b) { return a.time - b.time; });
-    // Dedup by time — lightweight-charts throws on duplicate timestamps
+    // Sort ascending; dedup by time — lightweight-charts throws on duplicate timestamps
     var seen = {};
-    var data = sorted.filter(function(c) {
+    var data = candles.slice().sort(function(a, b) { return a.time - b.time; }).filter(function(c) {
       if (seen[c.time]) return false;
       seen[c.time] = true;
       return true;
+    }).map(function(c) {
+      return { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
     });
     series.setData(data);
     series.setMarkers([]);
