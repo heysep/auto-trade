@@ -48,6 +48,11 @@ export class StrategyRegistry {
     return view(e);
   }
 
+  /** Remove a strategy entry by id. Returns true if it existed, false otherwise. */
+  remove(id: number): boolean {
+    return this.entries.delete(id);
+  }
+
   // --- durability: persist statuses so an API promotion survives a restart ---
   dump(): [number, StrategyStatus][] {
     return [...this.entries.entries()].map(([id, e]) => [id, e.status]);

@@ -30,4 +30,28 @@ describe('StrategyRegistry', () => {
     expect(r.get(1)?.status).toBe('APPROVED');
     expect(r.setStatus(99, 'LIVE')).toBeUndefined();
   });
+
+  it('remove deletes an entry and returns true', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    r.register(strat(2), 'b');
+    expect(r.remove(1)).toBe(true);
+    expect(r.get(1)).toBeUndefined();
+    expect(r.list()).toHaveLength(1);
+    expect(r.list()[0]?.id).toBe(2);
+  });
+
+  it('remove returns false for unknown id', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    expect(r.remove(99)).toBe(false);
+    expect(r.list()).toHaveLength(1);
+  });
+
+  it('remove cleans up entry(id) as well', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    r.remove(1);
+    expect(r.entry(1)).toBeUndefined();
+  });
 });
