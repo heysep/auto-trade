@@ -89,6 +89,27 @@ export interface TossOrdersList {
   hasNext?: boolean;
 }
 
+// --- Symbol catalog (GET /api/v1/stocks) ---
+// ⚠️ confirm field names against live probe before production use
+
+export interface TossStock {
+  symbol: string;
+  name: string;
+  market: string;
+}
+
+// --- Candle chart (GET /api/v1/candles) ---
+// Numbers come as strings from Toss; callers parse as needed.
+// ⚠️ confirm field names against live probe before production use
+
+export interface TossCandle {
+  time: number;      // epoch ms (or epoch s — confirm against live)
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+}
+
 // --- Market calendar (regular/pre/after sessions are startTime/endTime ISO pairs) ---
 
 export interface TossSession { startTime: string; endTime: string; }

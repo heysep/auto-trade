@@ -10,7 +10,7 @@ import { TokenManager } from './TokenManager.js';
 import { REQUEST_TIMEOUT_MS, RateLimitError, parseBody, unwrap } from './http.js';
 import type {
   OrderCreateRequest, TossOrderCreateResponse, TossOrder, TossOrdersList, TossMarketCalendar,
-  TossPriceItem,
+  TossPriceItem, TossStock, TossCandle,
 } from './types.js';
 
 const PREFIX = '/api/v1';
@@ -64,6 +64,15 @@ export class TossApiClient {
   }
   getMarketCalendar(market: 'KR' | 'US'): Promise<TossMarketCalendar> {
     return this.request(`${PREFIX}/market-calendar/${market}`);
+  }
+  // ⚠️ confirm exact query params + response field names against live before production use
+  getStocks(): Promise<TossStock[]> {
+    return this.request(`${PREFIX}/stocks`);
+  }
+  getCandles(symbol: string, interval: string): Promise<TossCandle[]> {
+    return this.request(
+      `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`,
+    );
   }
 
   // --- writes (used by LiveBroker only) ---
