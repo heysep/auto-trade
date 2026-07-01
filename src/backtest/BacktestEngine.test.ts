@@ -21,6 +21,11 @@ describe('BacktestEngine', () => {
     expect(res.equityCurve).toHaveLength(6);
     expect(res.finalPosition).toBeUndefined();       // flat at end -> omitted
     expect(res.rejected).toBe(0);
+
+    // fills: one BUY then one SELL captured for chart marker overlay
+    expect(res.fills).toHaveLength(2);
+    expect(res.fills[0]?.side).toBe('BUY');
+    expect(res.fills[1]?.side).toBe('SELL');
   });
 
   it('books a losing round-trip with a negative return and drawdown', async () => {

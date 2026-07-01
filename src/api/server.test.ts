@@ -213,6 +213,7 @@ describe('HTTP API', () => {
       expect(Array.isArray(body.equityCurve)).toBe(true);
       expect(typeof body.rejected).toBe('number');
       expect(Array.isArray(body.markers)).toBe(true);
+      expect(body.markers.length).toBeGreaterThanOrEqual(1);
     });
 
     it('returns 400 when symbol is missing', async () => {

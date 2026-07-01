@@ -152,7 +152,7 @@ export class TradingSystem {
       metrics: result.metrics,
       equityCurve: result.equityCurve,
       rejected: result.rejected,
-      markers: [],
+      markers: result.fills.map(({ time, side, price }) => ({ time, side, price })),
     };
   }
 }
