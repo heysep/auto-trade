@@ -172,6 +172,23 @@ describe('PaperBroker', () => {
     expect(tracker.dailyRealizedPnl(1, 'PAPER', 'KRW', T)).toBeLessThan(0);
   });
 
+  it('refuses fills on every path while halted', async () => {
+    const repo = new InMemoryRepository();
+    const book = new QuoteBook();
+    let halted = false;
+    const broker = new PaperBroker(repo, book, { now: () => T, isHalted: () => halted });
+    book.set(krQuote());
+
+    // resting limit placed while live
+    const { order } = await broker.placeOrder(req({ side: 'BUY', orderType: 'LIMIT', limitPrice: 69_000 }));
+    expect(order.status).toBe('PENDING');
+
+    halted = true;
+    await expect(broker.placeOrder(req({ side: 'BUY' }))).rejects.toThrow(/halted/);   // direct fill blocked
+    broker.onQuote(krQuote({ bid: 68_000, ask: 68_500 }));                              // would cross 69k
+    expect(await broker.getOpenOrders()).toHaveLength(1);                               // resting limit NOT filled
+  });
+
   it('cancels a resting order', async () => {
     const { broker, book } = make();
     book.set(krQuote());

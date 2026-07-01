@@ -22,6 +22,8 @@ export interface PaperBrokerOptions {
   onReject?: (order: Order, err: unknown) => void;
   /** Tracks round-trip outcomes for the risk halts. */
   tracker?: TradeTracker;
+  /** Emergency kill switch predicate — when true, no fills happen on ANY path. */
+  isHalted?: () => boolean;
 }
 
 /** Just the fields needed to price/fill/account a trade — shared by Order & OrderRequest. */
@@ -44,6 +46,7 @@ export class PaperBroker implements Broker {
   private readonly maxQuoteAgeMs: number;
   private readonly onReject: ((order: Order, err: unknown) => void) | undefined;
   private readonly tracker: TradeTracker | undefined;
+  private readonly isHalted: (() => boolean) | undefined;
 
   constructor(
     private readonly repo: OrderRepository,
@@ -55,9 +58,11 @@ export class PaperBroker implements Broker {
     this.maxQuoteAgeMs = opts.maxQuoteAgeMs ?? 5 * 60_000;
     this.onReject = opts.onReject;
     this.tracker = opts.tracker;
+    this.isHalted = opts.isHalted;
   }
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
+    if (this.isHalted?.()) throw new Error('trading halted; refusing to fill');
     // Idempotency: same key -> return the original outcome, never double-trade.
     const existing = this.repo.findByIdempotencyKey(req.idempotencyKey);
     if (existing) return { order: existing, fills: this.repo.getFills(existing.id) };
@@ -86,6 +91,7 @@ export class PaperBroker implements Broker {
 
   /** Match resting PENDING limit orders against a fresh quote; fill those now crossed. */
   onQuote(quote: Quote): void {
+    if (this.isHalted?.()) return;          // emergency stop blocks resting-limit fills too
     const resting = this.repo
       .getOpenOrdersBySymbol(quote.symbol, 'PAPER')
       .filter((o) => o.orderType === 'LIMIT' && o.status === 'PENDING');

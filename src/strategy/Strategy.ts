@@ -24,4 +24,7 @@ export interface Strategy {
   readonly currency: Currency;
   readonly mode: TradingMode;
   evaluate(ctx: StrategyDecisionContext): OrderIntent | null;
+  /** Optional indicator state for restart durability (e.g. an SMA price window). */
+  serialize?(): unknown;
+  deserialize?(state: unknown): void;
 }

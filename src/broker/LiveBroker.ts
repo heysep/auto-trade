@@ -17,6 +17,8 @@ export interface LiveBrokerOptions {
   /** Hard safety switch — placeOrder throws unless explicitly enabled (default false). */
   enabled?: boolean;
   now?: () => number;
+  /** Emergency kill switch predicate — when true, no live order is placed. */
+  isHalted?: () => boolean;
 }
 
 /**
@@ -27,6 +29,7 @@ export interface LiveBrokerOptions {
 export class LiveBroker implements Broker {
   private readonly enabled: boolean;
   private readonly now: () => number;
+  private readonly isHalted: (() => boolean) | undefined;
 
   constructor(
     private readonly client: LiveOrderClient,
@@ -36,9 +39,11 @@ export class LiveBroker implements Broker {
   ) {
     this.enabled = opts.enabled ?? false;
     this.now = opts.now ?? Date.now;
+    this.isHalted = opts.isHalted;
   }
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
+    if (this.isHalted?.()) throw new Error('trading halted; refusing to place a live order');
     if (!this.enabled) throw new Error('LiveBroker is disabled; refusing to place a live order');
     assertValidOrder(req);   // same guard as PaperBroker — reject before hitting the live API
 

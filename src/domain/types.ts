@@ -68,4 +68,13 @@ export interface Position {
   realizedPnl: number;
 }
 
+/** Daily NAV point — the equity curve MDD/total-return are computed from. */
+export interface EquitySnapshot {
+  strategyId: number;
+  mode: TradingMode;
+  nav: number;                 // cash + position market value
+  cash: number;
+  day: string;                 // YYYY-MM-DD in the market timezone
+}
+
 export type { OrderStatus, OrderSide, OrderType };

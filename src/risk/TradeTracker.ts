@@ -14,10 +14,16 @@ export interface FillContext {
   currency: Currency;
 }
 
+export interface RoundTrip { pnl: number; closedAt: number; }
+
 export interface TradeTracker {
   onFill(ctx: FillContext, effect: FillEffect, closedAt: number): void;
   dailyRealizedPnl(strategyId: number, mode: TradingMode, currency: Currency, nowMs: number): number;
   consecutiveLosses(strategyId: number, mode: TradingMode): number;
+  trades(strategyId: number, mode: TradingMode): RoundTrip[];   // capped history for performance/promotion
+  /** Mark the current market day as a daily-max-loss breach (feeds §7 promotion). */
+  markDailyLoss(strategyId: number, mode: TradingMode, currency: Currency, nowMs: number): void;
+  dailyLossViolationCount(strategyId: number, mode: TradingMode): number;
 }
 
 const TZ_BY_CURRENCY: Record<Currency, string> = {
@@ -25,18 +31,40 @@ const TZ_BY_CURRENCY: Record<Currency, string> = {
   USD: 'America/New_York',
 };
 
+// Intl.DateTimeFormat construction is ~80x the format() call; cache one per timezone since
+// tradingDay() runs on the per-tick snapshot path.
+const FMT_CACHE = new Map<string, Intl.DateTimeFormat>();
+function formatterFor(tz: string): Intl.DateTimeFormat {
+  let fmt = FMT_CACHE.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    FMT_CACHE.set(tz, fmt);
+  }
+  return fmt;
+}
+
 /** Local calendar day (YYYY-MM-DD) in the market's timezone — DST-correct via Intl. */
 export function tradingDay(nowMs: number, currency: Currency): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ_BY_CURRENCY[currency], year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(nowMs));
+  return formatterFor(TZ_BY_CURRENCY[currency]).format(new Date(nowMs));
 }
 
 interface Agg { day: string; dailyPnl: number; lossStreak: number; }
 
+/** Serializable snapshot for file-based durability across restarts. */
+export interface TrackerSnapshot {
+  baseline: [string, number][];
+  agg: [string, Agg][];
+  history: [string, RoundTrip[]][];
+  violationDays: [string, string[]][];
+}
+
+const TRADES_CAP = 2000;   // bounded history; promotion needs ~50, so this is plenty
+
 export class InMemoryTradeTracker implements TradeTracker {
   private readonly baseline = new Map<string, number>();   // realizedPnl at round-trip open
-  private readonly agg = new Map<string, Agg>();           // per (strategy, mode)
+  private readonly agg = new Map<string, Agg>();           // per (strategy, mode) — O(1) risk reads
+  private readonly history = new Map<string, RoundTrip[]>(); // per (strategy, mode) — capped trade log
+  private readonly violationDays = new Map<string, Set<string>>(); // per (strategy, mode) — daily-loss breach days
 
   private symKey(s: number, sym: string, m: TradingMode): string { return `${s}:${sym}:${m}`; }
   private aggKey(s: number, m: TradingMode): string { return `${s}:${m}`; }
@@ -65,6 +93,11 @@ export class InMemoryTradeTracker implements TradeTracker {
     a.dailyPnl += pnl;
     if (pnl < 0) a.lossStreak++;
     else if (pnl > 0) a.lossStreak = 0;                            // a win resets; breakeven is neutral
+
+    const log = this.history.get(key) ?? [];
+    log.push({ pnl, closedAt });
+    // Bounded; trim in batches so we don't pay an O(n) shift on every trade past the cap.
+    this.history.set(key, log.length > TRADES_CAP * 1.25 ? log.slice(-TRADES_CAP) : log);
   }
 
   dailyRealizedPnl(strategyId: number, mode: TradingMode, currency: Currency, nowMs: number): number {
@@ -75,5 +108,38 @@ export class InMemoryTradeTracker implements TradeTracker {
 
   consecutiveLosses(strategyId: number, mode: TradingMode): number {
     return this.agg.get(this.aggKey(strategyId, mode))?.lossStreak ?? 0;
+  }
+
+  trades(strategyId: number, mode: TradingMode): RoundTrip[] {
+    return (this.history.get(this.aggKey(strategyId, mode)) ?? []).slice();
+  }
+
+  markDailyLoss(strategyId: number, mode: TradingMode, currency: Currency, nowMs: number): void {
+    const key = this.aggKey(strategyId, mode);
+    const set = this.violationDays.get(key) ?? new Set<string>();
+    set.add(tradingDay(nowMs, currency));      // idempotent per day
+    this.violationDays.set(key, set);
+  }
+
+  dailyLossViolationCount(strategyId: number, mode: TradingMode): number {
+    return this.violationDays.get(this.aggKey(strategyId, mode))?.size ?? 0;
+  }
+
+  // --- durability ---
+  dump(): TrackerSnapshot {
+    return {
+      baseline: [...this.baseline.entries()],
+      agg: [...this.agg.entries()],
+      history: [...this.history.entries()],
+      violationDays: [...this.violationDays.entries()].map(([k, set]) => [k, [...set]]),
+    };
+  }
+
+  restore(s: TrackerSnapshot): void {
+    // maps are readonly fields — mutate in place rather than reassign.
+    this.baseline.clear(); for (const [k, v] of s.baseline) this.baseline.set(k, v);
+    this.agg.clear(); for (const [k, v] of s.agg) this.agg.set(k, v);
+    this.history.clear(); for (const [k, v] of s.history) this.history.set(k, v);
+    this.violationDays.clear(); for (const [k, arr] of s.violationDays) this.violationDays.set(k, new Set(arr));
   }
 }

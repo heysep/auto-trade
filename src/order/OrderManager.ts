@@ -3,6 +3,7 @@ import type { OrderRequest, OrderResult, Quote, TradingMode } from '../domain/ty
 import type { Strategy, OrderIntent } from '../strategy/Strategy.js';
 import { RiskManager, type RiskContext } from '../risk/RiskManager.js';
 import type { EventLogger } from '../observability/EventLogger.js';
+import type { HaltSwitch } from '../app/HaltSwitch.js';
 
 export type OrderOutcome =
   | { status: 'placed'; result: OrderResult }
@@ -18,6 +19,8 @@ export interface OrderManagerDeps {
   /** Safety buffer over the ask for sizing MARKET buys, so the risk gate prices
    *  the worst-case fill (ask + slippage), not the optimistic last. Default 50 bps. */
   marketBufferBps?: number;
+  /** Emergency kill switch — when tripped, every order is refused. */
+  haltSwitch?: HaltSwitch;
 }
 
 /**
@@ -33,6 +36,15 @@ export class OrderManager {
   }
 
   async handleIntent(strategy: Strategy, intent: OrderIntent, quote: Quote): Promise<OrderOutcome> {
+    // Emergency stop short-circuits everything — no order, paper or live.
+    if (this.deps.haltSwitch?.halted) {
+      const reason = `trading halted: ${this.deps.haltSwitch.reason ?? 'emergency stop'}`;
+      this.safeLog({
+        type: 'HALTED', strategyId: strategy.id, symbol: quote.symbol, message: reason, at: this.now(),
+      });
+      return { status: 'blocked', reason };
+    }
+
     // For MARKET, size against the worst-case fill (ask + buffer), not the optimistic
     // last; LIMIT's limitPrice is already a correct upper bound.
     const referencePrice = intent.orderType === 'LIMIT' && intent.limitPrice !== undefined
