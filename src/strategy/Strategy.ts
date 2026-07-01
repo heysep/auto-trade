@@ -27,4 +27,5 @@ export interface Strategy {
   /** Optional indicator state for restart durability (e.g. an SMA price window). */
   serialize?(): unknown;
   deserialize?(state: unknown): void;
+  signal?(quote: Quote): import('./signal.js').Signal;
 }

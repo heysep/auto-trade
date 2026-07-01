@@ -1,6 +1,7 @@
 import type { Strategy, OrderIntent, StrategyDecisionContext } from './Strategy.js';
-import type { Currency, TradingMode } from '../domain/types.js';
-import { isValidQuantity } from '../domain/money.js';
+import type { Currency, TradingMode, Quote } from '../domain/types.js';
+import type { Signal } from './signal.js';
+import { signalToIntent } from './signal.js';
 
 export interface ThresholdConfig {
   id: number;
@@ -26,19 +27,23 @@ export class ThresholdStrategy implements Strategy {
     this.mode = cfg.mode;
   }
 
-  evaluate({ quote, position }: StrategyDecisionContext): OrderIntent | null {
-    const price = quote.last;
-    const held = position?.quantity ?? 0;
+  signal(quote: Quote): Signal {
+    const couldBuy = quote.last <= this.cfg.buyBelow;
+    const couldSell = quote.last >= this.cfg.sellAbove;
 
-    if (held === 0 && price <= this.cfg.buyBelow) {
-      const raw = this.cfg.orderNotional / price;
-      const qty = this.currency === 'KRW' ? Math.floor(raw) : raw;
-      if (!isValidQuantity(qty, this.currency)) return null;     // notional too small for 1 share
-      return { side: 'BUY', quantity: qty, orderType: 'MARKET', reason: `price ${price} <= ${this.cfg.buyBelow}` };
+    if (couldSell && !couldBuy) return 'BEARISH';
+    if (couldBuy && !couldSell) return 'BULLISH';
+    if (couldBuy && couldSell) {
+      // Both thresholds crossed: use distance to nearest threshold
+      const distToBuy = this.cfg.buyBelow - quote.last;
+      const distToSell = quote.last - this.cfg.sellAbove;
+      return distToSell < distToBuy ? 'BEARISH' : 'BULLISH';
     }
-    if (held > 0 && price >= this.cfg.sellAbove) {
-      return { side: 'SELL', quantity: held, orderType: 'MARKET', reason: `price ${price} >= ${this.cfg.sellAbove}` };
-    }
-    return null;
+    return 'NEUTRAL';
+  }
+
+  evaluate({ quote, position }: StrategyDecisionContext): OrderIntent | null {
+    return signalToIntent(this.signal(quote), position?.quantity ?? 0,
+      { currency: this.currency, price: quote.last, orderNotional: this.cfg.orderNotional });
   }
 }
