@@ -7,15 +7,22 @@ import { InMemoryRepository } from '../persistence/repository.js';
 import { QuoteBook } from '../market/PriceSource.js';
 import { InMemoryEventLogger } from '../observability/EventLogger.js';
 import { HaltSwitch } from '../app/HaltSwitch.js';
+import { SymbolCatalog } from '../market/SymbolCatalog.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote } from '../domain/types.js';
+import type { TossCandle, TossStock } from '../toss/types.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
   metrics: { totalReturn: 0.08, maxDrawdown: -0.05, winRate: 0.6, profitFactor: 1.6, tradeCount: 60, avgWinLoss: 1.4 },
 };
 
-function harness(opts: { server?: ServerOptions; promotionInputFor?: (id: number) => PromotionInput } = {}) {
+function harness(opts: {
+  server?: ServerOptions;
+  promotionInputFor?: (id: number) => PromotionInput;
+  symbolCatalog?: SymbolCatalog;
+  getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
+} = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
   const registry = new StrategyRegistry();
@@ -34,6 +41,8 @@ function harness(opts: { server?: ServerOptions; promotionInputFor?: (id: number
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch, now: () => 0,
     ...(opts.promotionInputFor ? { promotionInputFor: opts.promotionInputFor } : {}),
+    ...(opts.symbolCatalog ? { symbolCatalog: opts.symbolCatalog } : {}),
+    ...(opts.getCandles ? { getCandles: opts.getCandles } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch };
 }
@@ -108,5 +117,67 @@ describe('HTTP API', () => {
     expect((await app.inject({ method: 'GET', url: '/api/strategies' })).statusCode).toBe(200);   // reads open
     const ok = await app.inject({ method: 'POST', url: '/api/emergency-stop', headers: { 'x-api-token': 'secret' } });
     expect(ok.statusCode).toBe(200);
+  });
+
+  describe('market/symbols + market/candles', () => {
+    const STOCKS: TossStock[] = [
+      { symbol: '005930', name: '삼성전자', market: 'KR' },
+      { symbol: '000660', name: 'SK하이닉스', market: 'KR' },
+    ];
+    const CANDLES: TossCandle[] = [
+      { time: 1_000_000, open: '70000', high: '72000', low: '69000', close: '71000' },
+    ];
+
+    function marketHarness() {
+      const catalog = new SymbolCatalog(async () => STOCKS);
+      const getCandles = async (_s: string, _i: string): Promise<TossCandle[]> => CANDLES;
+      return harness({ symbolCatalog: catalog, getCandles });
+    }
+
+    it('/api/market/symbols?q=삼성 returns matching stocks', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/symbols?q=%EC%82%BC%EC%84%B1' });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<TossStock[]>();
+      expect(body).toHaveLength(1);
+      expect(body[0]?.symbol).toBe('005930');
+    });
+
+    it('/api/market/symbols with no q returns all stocks', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/symbols' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json<TossStock[]>()).toHaveLength(2);
+    });
+
+    it('/api/market/candles?symbol=005930 returns the stub array', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/candles?symbol=005930' });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<TossCandle[]>();
+      expect(body).toHaveLength(1);
+      expect(body[0]?.close).toBe('71000');
+    });
+
+    it('/api/market/candles without symbol returns 400', async () => {
+      const { app } = marketHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/candles' });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/symbol/);
+    });
+
+    it('/api/market/symbols returns [] when no catalog is wired', async () => {
+      const { app } = harness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/symbols?q=삼성' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+    });
+
+    it('/api/market/candles returns [] when no candles fn is wired', async () => {
+      const { app } = harness();
+      const res = await app.inject({ method: 'GET', url: '/api/market/candles?symbol=005930' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+    });
   });
 });

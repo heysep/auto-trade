@@ -23,6 +23,7 @@ import { InMemoryEventLogger } from './observability/EventLogger.js';
 import { HaltSwitch } from './app/HaltSwitch.js';
 import { FileHaltStore } from './app/HaltStore.js';
 import { TradingSystem } from './app/TradingSystem.js';
+import { SymbolCatalog } from './market/SymbolCatalog.js';
 import { buildServer } from './api/server.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
@@ -149,10 +150,13 @@ export function bootstrap() {
 
   const reconciliation = new ReconciliationService(paperBroker, repo, logger, { mode: 'PAPER', tracker });
   const perf = new PerformanceService(repo, tracker, () => STRATEGY_CAPITAL);
+  const symbolCatalog = new SymbolCatalog(() => client.getStocks());
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
     promotionInputFor: (id) => perf.promotionInput(id, 'PAPER'),
+    symbolCatalog,
+    getCandles: (s, i) => client.getCandles(s, i),
   });
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 

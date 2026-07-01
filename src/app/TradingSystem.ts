@@ -5,6 +5,8 @@ import type { InMemoryEventLogger, LogEvent } from '../observability/EventLogger
 import type { HaltSwitch } from './HaltSwitch.js';
 import type { Position, Order, Quote, TradingMode, StrategyStatus } from '../domain/types.js';
 import { evaluatePromotion, type PromotionInput } from '../strategy/PromotionGate.js';
+import type { SymbolCatalog } from '../market/SymbolCatalog.js';
+import type { TossStock, TossCandle } from '../toss/types.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -31,6 +33,10 @@ export interface TradingSystemDeps {
   /** Supplies promotion metrics for a strategy. Omitted/zero-data => fails closed (no LIVE). */
   promotionInputFor?: (strategyId: number) => PromotionInput | undefined;
   now?: () => number;
+  /** Searchable stock symbol catalog. Omitted => searchSymbols returns []. */
+  symbolCatalog?: SymbolCatalog;
+  /** Candle fetcher. Omitted => candles returns []. */
+  getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -106,5 +112,18 @@ export class TradingSystem {
   logs(limit = 100): LogEvent[] {
     const all = this.deps.logger.events;
     return all.slice(Math.max(0, all.length - limit));
+  }
+
+  async searchSymbols(query: string, limit?: number): Promise<TossStock[]> {
+    if (!this.deps.symbolCatalog) return [];
+    if (limit !== undefined) {
+      return this.deps.symbolCatalog.search(query, limit);
+    }
+    return this.deps.symbolCatalog.search(query);
+  }
+
+  async candles(symbol: string, interval: string): Promise<TossCandle[]> {
+    if (!this.deps.getCandles) return [];
+    return this.deps.getCandles(symbol, interval);
   }
 }

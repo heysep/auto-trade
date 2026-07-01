@@ -100,6 +100,25 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return system.quotes(symbols);
   });
 
+  // --- symbol catalog ---
+  app.get('/api/market/symbols', async (req) => {
+    const q = req.query as { q?: string; limit?: string };
+    const query = q.q ?? '';
+    const rawLimit = q.limit !== undefined ? Number(q.limit) : undefined;
+    const limit = rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
+    if (limit !== undefined) {
+      return system.searchSymbols(query, limit);
+    }
+    return system.searchSymbols(query);
+  });
+
+  // --- candles ---
+  app.get('/api/market/candles', async (req, reply) => {
+    const q = req.query as { symbol?: string; interval?: string };
+    if (!q.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    return system.candles(q.symbol, q.interval ?? '1D');
+  });
+
   // --- logs ---
   app.get('/api/logs', async (req) => {
     const q = req.query as { limit?: string };
