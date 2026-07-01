@@ -7,6 +7,10 @@ import type { Position, Order, Quote, TradingMode, StrategyStatus } from '../dom
 import { evaluatePromotion, type PromotionInput } from '../strategy/PromotionGate.js';
 import type { SymbolCatalog } from '../market/SymbolCatalog.js';
 import type { TossStock, TossCandle } from '../toss/types.js';
+import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
+import { BacktestEngine } from '../backtest/BacktestEngine.js';
+import { parseNum } from '../domain/money.js';
+import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -125,5 +129,30 @@ export class TradingSystem {
   async candles(symbol: string, interval: string): Promise<TossCandle[]> {
     if (!this.deps.getCandles) return [];
     return this.deps.getCandles(symbol, interval);
+  }
+
+  async backtest(input: {
+    symbol: string;
+    spec: StrategySpec;
+    interval?: string;
+    capital?: number;
+  }): Promise<{
+    metrics: PerformanceMetrics;
+    equityCurve: number[];
+    rejected: number;
+    markers: { time: number; side: string; price: number }[];
+  }> {
+    const { symbol, spec, interval = '1D', capital = 10_000_000 } = input;
+    const tossCandles = await this.candles(symbol, interval);
+    const bars = tossCandles.map((c) => ({ ts: c.time, price: parseNum(c.close) }));
+    const strategy = buildStrategy(1, symbol, 'KRW', 'PAPER', spec);
+    const engine = new BacktestEngine();
+    const result = await engine.run(strategy, bars, { capital, currency: 'KRW' });
+    return {
+      metrics: result.metrics,
+      equityCurve: result.equityCurve,
+      rejected: result.rejected,
+      markers: [],
+    };
   }
 }

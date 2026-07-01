@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { TradingSystem } from '../app/TradingSystem.js';
 import type { StrategyStatus, TradingMode } from '../domain/types.js';
+import type { StrategySpec } from '../strategy/strategySpec.js';
 
 const STATUSES: readonly StrategyStatus[] = [
   'DRAFT', 'BACKTESTING', 'PAPER_TESTING', 'APPROVED', 'LIVE', 'PAUSED', 'REJECTED',
@@ -138,6 +139,19 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
   app.post('/api/resume', async () => {
     system.resume();
     return system.haltStatus();
+  });
+
+  // --- backtest ---
+  app.post('/api/backtest', async (req, reply) => {
+    const body = (req.body ?? {}) as { symbol?: string; spec?: StrategySpec; interval?: string; capital?: number };
+    if (!body.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    if (!body.spec) return reply.code(400).send({ error: 'spec is required' });
+    return system.backtest({
+      symbol: body.symbol,
+      spec: body.spec,
+      ...(body.interval !== undefined ? { interval: body.interval } : {}),
+      ...(body.capital !== undefined ? { capital: body.capital } : {}),
+    });
   });
 
   return app;

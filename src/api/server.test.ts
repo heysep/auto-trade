@@ -180,4 +180,59 @@ describe('HTTP API', () => {
       expect(res.json()).toEqual([]);
     });
   });
+
+  describe('backtest', () => {
+    // Rising-then-falling series: price below buyBelow triggers BUY on bar 0 (filled bar 1),
+    // then price above sellAbove triggers SELL on bar 2 (filled bar 3) → tradeCount = 1.
+    const BT_CANDLES: TossCandle[] = [
+      { time: 1000, open: '60000', high: '61000', low: '59000', close: '60000' },
+      { time: 2000, open: '60000', high: '61000', low: '59000', close: '60000' },
+      { time: 3000, open: '85000', high: '86000', low: '84000', close: '85000' },
+      { time: 4000, open: '85000', high: '86000', low: '84000', close: '85000' },
+    ];
+
+    const SPEC = {
+      type: 'threshold' as const,
+      params: { buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000 },
+    };
+
+    function btHarness() {
+      return harness({ getCandles: async () => BT_CANDLES });
+    }
+
+    it('returns 200 with metrics.tradeCount >= 1 for a trading spec', async () => {
+      const { app } = btHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/backtest',
+        payload: { symbol: '005930', spec: SPEC },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{ metrics: { tradeCount: number }; equityCurve: number[]; rejected: number; markers: unknown[] }>();
+      expect(body.metrics.tradeCount).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(body.equityCurve)).toBe(true);
+      expect(typeof body.rejected).toBe('number');
+      expect(Array.isArray(body.markers)).toBe(true);
+    });
+
+    it('returns 400 when symbol is missing', async () => {
+      const { app } = btHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/backtest',
+        payload: { spec: SPEC },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('returns 400 when spec is missing', async () => {
+      const { app } = btHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/backtest',
+        payload: { symbol: '005930' },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
 });
