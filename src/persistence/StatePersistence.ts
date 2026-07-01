@@ -7,6 +7,7 @@ import type { InMemoryTradeTracker, TrackerSnapshot } from '../risk/TradeTracker
 import type { StrategyRegistry } from '../strategy/StrategyRegistry.js';
 import type { Strategy } from '../strategy/Strategy.js';
 import type { StrategyStatus } from '../domain/types.js';
+import type { StrategyDeployer, DeployRecord } from '../app/StrategyDeployer.js';
 
 const VERSION = 1;
 interface PersistedState {
@@ -15,9 +16,10 @@ interface PersistedState {
   tracker: TrackerSnapshot;
   registry?: [number, StrategyStatus][];
   strategies?: [number, unknown][];     // per-strategy indicator state
+  deployedSpecs?: DeployRecord[];
 }
 
-export interface PersistExtra { registry?: StrategyRegistry; strategies?: Strategy[]; }
+export interface PersistExtra { registry?: StrategyRegistry; strategies?: Strategy[]; deployer?: StrategyDeployer; }
 
 const isArr = Array.isArray;
 
@@ -49,6 +51,7 @@ export class FileStatePersistence {
       ...(extra.strategies
         ? { strategies: extra.strategies.filter((s) => s.serialize).map((s) => [s.id, s.serialize!()]) }
         : {}),
+      ...(extra.deployer ? { deployedSpecs: extra.deployer.records() } : {}),
     };
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.tmp`;
@@ -75,6 +78,7 @@ export class FileStatePersistence {
 
     repo.restore(s.repo);
     tracker.restore(s.tracker);
+    if (extra.deployer && isArr(s.deployedSpecs)) extra.deployer.restore(s.deployedSpecs);
     if (extra.registry && isArr(s.registry)) extra.registry.restore(s.registry);
     if (extra.strategies && isArr(s.strategies)) {
       const byId = new Map(s.strategies);

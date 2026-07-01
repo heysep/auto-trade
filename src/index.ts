@@ -4,7 +4,7 @@
 import { resolve } from 'node:path';
 import { config } from './config/env.js';
 import { TossApiClient } from './toss/TossApiClient.js';
-import { MarketDataWorker, type WatchedSymbol, type Market } from './market/MarketDataWorker.js';
+import { MarketDataWorker, type Market } from './market/MarketDataWorker.js';
 import { MarketCalendarService } from './market/MarketCalendar.js';
 import { QuoteBook } from './market/PriceSource.js';
 import { InMemoryRepository } from './persistence/repository.js';
@@ -23,6 +23,8 @@ import { InMemoryEventLogger } from './observability/EventLogger.js';
 import { HaltSwitch } from './app/HaltSwitch.js';
 import { FileHaltStore } from './app/HaltStore.js';
 import { TradingSystem } from './app/TradingSystem.js';
+import { StrategyDeployer } from './app/StrategyDeployer.js';
+import { WatchList } from './market/WatchList.js';
 import { SymbolCatalog } from './market/SymbolCatalog.js';
 import { buildServer } from './api/server.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
@@ -110,21 +112,27 @@ export function bootstrap() {
     registry.register(s, `strategy-${s.id}`, 'PAPER_TESTING');
   }
 
+  // Build the watchList seeded from static strategies' symbols (deduped — WatchList.add is idempotent).
+  const watchList = new WatchList(
+    strategies.flatMap((s) => [...s.symbols].map((symbol) => ({ symbol, market: marketOf(s.currency) }))),
+  );
+
+  // Create deployer; self-referential onChange persists state immediately after each deploy/undeploy.
+  let deployer!: StrategyDeployer;
+  deployer = new StrategyDeployer(
+    {
+      engine, registry, watchList, currency: 'KRW', mode: 'PAPER',
+      onChange: () => {
+        try { statePersistence.save(repo, tracker, { registry, strategies, deployer }); } catch { /* best-effort */ }
+      },
+    },
+    strategies.length + 1,
+  );
+
   // Restore prior run's orders/positions/equity/streaks + registry statuses + strategy
   // indicator windows, now that strategies are registered. Throws on a version mismatch.
-  if (statePersistence.load(repo, tracker, { registry, strategies })) {
+  if (statePersistence.load(repo, tracker, { registry, strategies, deployer })) {
     console.log('restored trading state from disk');
-  }
-
-  // Dedupe so two strategies sharing a symbol don't produce a duplicate batch-fetch entry.
-  const seenSymbols = new Set<string>();
-  const watched: WatchedSymbol[] = [];
-  for (const s of strategies) {
-    for (const symbol of s.symbols) {
-      if (seenSymbols.has(symbol)) continue;
-      seenSymbols.add(symbol);
-      watched.push({ symbol, market: marketOf(s.currency) });
-    }
   }
 
   const calendar = new MarketCalendarService({ fetchCalendar: (m) => client.getMarketCalendar(m) });
@@ -139,7 +147,7 @@ export function bootstrap() {
   const worker = new MarketDataWorker({
     // /prices unwraps to a bare array — re-wrap into the { result } shape the worker reads.
     fetchPrices: async (symbols) => ({ result: await client.getPrices(symbols) }),
-    getWatched: () => watched,
+    getWatched: () => watchList.list(),
     book,
     // Sample each strategy off its OWN market's tick (q.currency) at the tick's time (q.ts).
     onTick: async (q) => { await engine.onTick(q); snapshotScheduler.maybeSnapshot(q.ts, q.currency); },
@@ -157,17 +165,19 @@ export function bootstrap() {
     promotionInputFor: (id) => perf.promotionInput(id, 'PAPER'),
     symbolCatalog,
     getCandles: (s, i) => client.getCandles(s, i),
+    deployer,
   });
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
   return {
     client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
+    deployer, watchList,
   };
 }
 
 export async function main(): Promise<void> {
-  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies } = bootstrap();
+  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies, deployer } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
   if (system.haltStatus().halted) {
     console.warn(`⚠️ kill switch is SET (${system.haltStatus().reason}); brokers will refuse orders until /api/resume`);
@@ -178,7 +188,7 @@ export async function main(): Promise<void> {
 
   // Persist state periodically + on shutdown so a restart resumes from disk.
   const saveState = () => {
-    try { statePersistence.save(repo, tracker, { registry, strategies }); }
+    try { statePersistence.save(repo, tracker, { registry, strategies, deployer }); }
     catch (e) { console.error('state save failed:', e); }
   };
   const saveTimer = setInterval(saveState, STATE_SAVE_MS);

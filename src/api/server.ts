@@ -26,7 +26,7 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
   // Auth on the control plane (mutations). Reads stay open.
   if (opts.authToken) {
     app.addHook('onRequest', async (req, reply) => {
-      if (req.method === 'POST' || req.method === 'PATCH') {
+      if (req.method === 'POST' || req.method === 'PATCH' || req.method === 'DELETE') {
         if (req.headers['x-api-token'] !== opts.authToken) {
           return reply.code(401).send({ error: 'unauthorized' });
         }
@@ -54,6 +54,24 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     const id = Number((req.params as { id: string }).id);
     const s = Number.isInteger(id) ? system.registry.get(id) : undefined;
     return s ?? reply.code(404).send({ error: 'strategy not found' });
+  });
+
+  app.post('/api/strategies', async (req, reply) => {
+    const body = (req.body ?? {}) as { symbol?: string; spec?: StrategySpec; name?: string };
+    if (!body.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    if (!body.spec) return reply.code(400).send({ error: 'spec is required' });
+    if (!body.name) return reply.code(400).send({ error: 'name is required' });
+    const result = system.deploy({ symbol: body.symbol, spec: body.spec, name: body.name });
+    if (!result.ok) return reply.code(result.code).send({ error: result.error });
+    return reply.code(201).send(result.view);
+  });
+
+  app.delete('/api/strategies/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid strategy id' });
+    const ok = system.undeploy(id);
+    if (!ok) return reply.code(404).send({ error: 'strategy not found' });
+    return { ok: true };
   });
 
   app.patch('/api/strategies/:id/status', async (req, reply) => {

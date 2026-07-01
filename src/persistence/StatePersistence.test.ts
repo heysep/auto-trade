@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync } from 'node:fs';
@@ -7,8 +7,13 @@ import { InMemoryRepository } from './repository.js';
 import { InMemoryTradeTracker, type FillContext } from '../risk/TradeTracker.js';
 import { StrategyRegistry } from '../strategy/StrategyRegistry.js';
 import { MovingAverageCrossStrategy } from '../strategy/MovingAverageCrossStrategy.js';
+import { StrategyDeployer } from '../app/StrategyDeployer.js';
+import { StrategyEngine } from '../strategy/StrategyEngine.js';
+import { WatchList } from '../market/WatchList.js';
 import type { Order, Fill, Position, EquitySnapshot, Quote } from '../domain/types.js';
 import type { FillEffect } from '../domain/positionAccounting.js';
+import type { OrderManager } from '../order/OrderManager.js';
+import type { StrategySpec } from '../strategy/strategySpec.js';
 
 const D = Date.parse('2026-06-30T05:00:00+09:00');
 const order = (id: string): Order => ({
@@ -98,6 +103,48 @@ describe('FileStatePersistence', () => {
     const r = new InMemoryRepository();
     expect(new FileStatePersistence(FILE).load(r, new InMemoryTradeTracker())).toBe(false);
     expect(r.allOrders()).toHaveLength(0);   // all-or-nothing: nothing restored
+  });
+
+  it('round-trips deployed specs through save/load (deployer restore rebuilds records)', () => {
+    const thresholdSpec: StrategySpec = {
+      type: 'threshold',
+      params: { buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000 },
+    };
+
+    // Build a minimal engine stub
+    const orderManager = { handleIntent: vi.fn() } as unknown as OrderManager;
+    const engine1 = new StrategyEngine({ orderManager, getPosition: () => undefined });
+    const registry1 = new StrategyRegistry();
+    const watchList1 = new WatchList();
+    const deployer1 = new StrategyDeployer(
+      { engine: engine1, registry: registry1, watchList: watchList1, currency: 'KRW', mode: 'PAPER' },
+      10,
+    );
+    deployer1.deploy({ symbol: '005930', spec: thresholdSpec, name: 'dyn-threshold' });
+
+    const sp = new FileStatePersistence(FILE);
+    sp.save(new InMemoryRepository(), new InMemoryTradeTracker(), { deployer: deployer1 });
+
+    // Load into a fresh deployer
+    const engine2 = new StrategyEngine({ orderManager, getPosition: () => undefined });
+    const registry2 = new StrategyRegistry();
+    const watchList2 = new WatchList();
+    const deployer2 = new StrategyDeployer(
+      { engine: engine2, registry: registry2, watchList: watchList2, currency: 'KRW', mode: 'PAPER' },
+      10,
+    );
+    expect(sp.load(new InMemoryRepository(), new InMemoryTradeTracker(), { deployer: deployer2 })).toBe(true);
+
+    // The record should have been restored
+    const records = deployer2.records();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.name).toBe('dyn-threshold');
+    expect(records[0]?.symbol).toBe('005930');
+    expect(records[0]?.spec).toEqual(thresholdSpec);
+
+    // Strategy should be in the registry and watchList
+    expect(registry2.get(records[0]!.id)).toBeDefined();
+    expect(watchList2.list()).toContainEqual({ symbol: '005930', market: 'KR' });
   });
 
   it('round-trips registry statuses and strategy indicator windows', () => {

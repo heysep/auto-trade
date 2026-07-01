@@ -11,6 +11,7 @@ import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
 import { BacktestEngine } from '../backtest/BacktestEngine.js';
 import { parseNum } from '../domain/money.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
+import type { StrategyDeployer } from './StrategyDeployer.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -41,6 +42,8 @@ export interface TradingSystemDeps {
   symbolCatalog?: SymbolCatalog;
   /** Candle fetcher. Omitted => candles returns []. */
   getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
+  /** Dynamic strategy deployer. Omitted => deploy() returns 400. */
+  deployer?: StrategyDeployer;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -129,6 +132,22 @@ export class TradingSystem {
   async candles(symbol: string, interval: string): Promise<TossCandle[]> {
     if (!this.deps.getCandles) return [];
     return this.deps.getCandles(symbol, interval);
+  }
+
+  /** Deploy a dynamic strategy. Returns 400 if fields missing or no deployer configured. */
+  deploy(input: { symbol: string; spec: StrategySpec; name: string }): { ok: true; view: StrategyView } | { ok: false; code: number; error: string } {
+    if (!this.deps.deployer) {
+      return { ok: false, code: 400, error: 'deployer not configured' };
+    }
+    const record = this.deps.deployer.deploy(input);
+    const view = this.deps.registry.get(record.id);
+    if (!view) return { ok: false, code: 500, error: 'internal: strategy not found after deploy' };
+    return { ok: true, view };
+  }
+
+  /** Remove a deployed strategy by id. Returns false if unknown. */
+  undeploy(id: number): boolean {
+    return this.deps.deployer?.undeploy(id) ?? false;
   }
 
   async backtest(input: {

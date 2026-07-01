@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildServer, type ServerOptions } from './server.js';
 import { TradingSystem } from '../app/TradingSystem.js';
 import { StrategyRegistry } from '../strategy/StrategyRegistry.js';
@@ -8,9 +8,14 @@ import { QuoteBook } from '../market/PriceSource.js';
 import { InMemoryEventLogger } from '../observability/EventLogger.js';
 import { HaltSwitch } from '../app/HaltSwitch.js';
 import { SymbolCatalog } from '../market/SymbolCatalog.js';
+import { StrategyEngine } from '../strategy/StrategyEngine.js';
+import { WatchList } from '../market/WatchList.js';
+import { StrategyDeployer } from '../app/StrategyDeployer.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote } from '../domain/types.js';
 import type { TossCandle, TossStock } from '../toss/types.js';
+import type { OrderManager } from '../order/OrderManager.js';
+import type { StrategyView } from '../strategy/StrategyRegistry.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -22,6 +27,8 @@ function harness(opts: {
   promotionInputFor?: (id: number) => PromotionInput;
   symbolCatalog?: SymbolCatalog;
   getCandles?: (symbol: string, interval: string) => Promise<TossCandle[]>;
+  /** When true, harness builds a StrategyEngine + WatchList + StrategyDeployer sharing the same registry as the system. */
+  withDeployer?: boolean;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -38,13 +45,24 @@ function harness(opts: {
   repo.upsertPosition({ strategyId: 1, symbol: '005930', mode: 'PAPER', quantity: 10, avgPrice: 70_000, realizedPnl: 0 } as Position);
   repo.saveOrder({ id: 'o1', strategyId: 1, symbol: '005930', currency: 'KRW', side: 'BUY', orderType: 'MARKET', quantity: 10, status: 'FILLED', mode: 'PAPER', idempotencyKey: 'o1', createdAt: 0 } as Order);
 
+  // Optionally build a deployer that shares the same registry so system.deploy() can look up the view.
+  let deployer: StrategyDeployer | undefined;
+  if (opts.withDeployer) {
+    const orderManager = { handleIntent: vi.fn() } as unknown as OrderManager;
+    const engine = new StrategyEngine({ orderManager, getPosition: () => undefined });
+    const watchList = new WatchList();
+    // Static strategy has id=1; dynamic deployer starts at id=10 to avoid collisions.
+    deployer = new StrategyDeployer({ engine, registry, watchList, currency: 'KRW', mode: 'PAPER' }, 10);
+  }
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch, now: () => 0,
     ...(opts.promotionInputFor ? { promotionInputFor: opts.promotionInputFor } : {}),
     ...(opts.symbolCatalog ? { symbolCatalog: opts.symbolCatalog } : {}),
     ...(opts.getCandles ? { getCandles: opts.getCandles } : {}),
+    ...(deployer ? { deployer } : {}),
   });
-  return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch };
+  return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer };
 }
 
 describe('HTTP API', () => {
@@ -117,6 +135,8 @@ describe('HTTP API', () => {
     expect((await app.inject({ method: 'GET', url: '/api/strategies' })).statusCode).toBe(200);   // reads open
     const ok = await app.inject({ method: 'POST', url: '/api/emergency-stop', headers: { 'x-api-token': 'secret' } });
     expect(ok.statusCode).toBe(200);
+    // DELETE is also token-gated
+    expect((await app.inject({ method: 'DELETE', url: '/api/strategies/99' })).statusCode).toBe(401);
   });
 
   describe('market/symbols + market/candles', () => {
@@ -234,6 +254,76 @@ describe('HTTP API', () => {
         payload: { symbol: '005930' },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('dynamic strategy deploy / undeploy', () => {
+    const THRESHOLD_SPEC = {
+      type: 'threshold' as const,
+      params: { buyBelow: 65_000, sellAbove: 75_000, orderNotional: 500_000 },
+    };
+
+    it('POST /api/strategies deploys a strategy (201) and it appears in GET /api/strategies', async () => {
+      const { app } = harness({ withDeployer: true });
+
+      const post = await app.inject({
+        method: 'POST', url: '/api/strategies',
+        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'dynamic-dip' },
+      });
+      expect(post.statusCode).toBe(201);
+      const view = post.json<StrategyView>();
+      expect(view.name).toBe('dynamic-dip');
+      expect(view.status).toBe('PAPER_TESTING');
+
+      const list = await app.inject({ method: 'GET', url: '/api/strategies' });
+      const strategies = list.json<StrategyView[]>();
+      expect(strategies.some((s) => s.name === 'dynamic-dip')).toBe(true);
+    });
+
+    it('DELETE /api/strategies/:id removes a deployed strategy', async () => {
+      const { app } = harness({ withDeployer: true });
+
+      const post = await app.inject({
+        method: 'POST', url: '/api/strategies',
+        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'to-remove' },
+      });
+      expect(post.statusCode).toBe(201);
+      const { id } = post.json<StrategyView>();
+
+      const del = await app.inject({ method: 'DELETE', url: `/api/strategies/${id}` });
+      expect(del.statusCode).toBe(200);
+      expect(del.json()).toEqual({ ok: true });
+
+      // No longer in the deployer's registry
+      const del2 = await app.inject({ method: 'DELETE', url: `/api/strategies/${id}` });
+      expect(del2.statusCode).toBe(404);
+    });
+
+    it('DELETE /api/strategies/:id returns 404 for unknown id', async () => {
+      const { app } = harness({ withDeployer: true });
+      const res = await app.inject({ method: 'DELETE', url: '/api/strategies/9999' });
+      expect(res.statusCode).toBe(404);
+      expect(res.json<{ error: string }>().error).toMatch(/not found/);
+    });
+
+    it('POST /api/strategies returns 400 when deployer is not configured', async () => {
+      const { app } = harness();  // no deployer
+      const res = await app.inject({
+        method: 'POST', url: '/api/strategies',
+        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'wont-work' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/deployer/);
+    });
+
+    it('POST /api/strategies returns 400 when spec is missing', async () => {
+      const { app } = harness({ withDeployer: true });
+      const res = await app.inject({
+        method: 'POST', url: '/api/strategies',
+        payload: { symbol: '035720', name: 'no-spec' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/spec/);
     });
   });
 });
