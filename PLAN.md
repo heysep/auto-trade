@@ -1,3 +1,9 @@
+> **구현 현황 (2026-07 기준):** 이 계획서의 핵심은 대부분 구현됨 — 백테스트 · 페이퍼 브로커 ·
+> 리스크 halt(일일/연속/미실현) · reconciliation · 승급 게이트(§7, 실 메트릭·fail-closed) ·
+> 내구 킬스위치 · 내구 상태(재시작 안전) · REST API + 대시보드 · 2전략. LiveBroker는 기본 비활성.
+> 단일 프로세스 기준 기능 완성(101 tests). 남은 대형 항목: 멀티프로세스용 async DB repo.
+> 실행/구조는 [`README.md`](./README.md), API 실측 스펙은 [`docs/toss-api-spec.md`](./docs/toss-api-spec.md).
+
 # 토스증권 Open API 기반 페이퍼 트레이딩 / 자동매매 시스템 개발 계획서 v2
 
 > v1 초안 대비 변경점: API 스펙 검증 단계 신설(Phase 0), Broker 추상화 명시, DB 스키마
