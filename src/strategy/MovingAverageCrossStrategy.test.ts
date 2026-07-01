@@ -62,4 +62,13 @@ describe('MovingAverageCrossStrategy', () => {
     expect(bad({ fastPeriod: 0 })).toThrow();                   // non-positive
     expect(bad({ slowPeriod: 3.5 })).toThrow();                 // non-integer
   });
+
+  it('signal(): NEUTRAL until warm, then BULLISH when fast>slow', () => {
+    const s = make(); // fast 2 slow 3
+    let ts = 0; const q = (p: number) => ({ symbol: 'X', currency: 'KRW' as const, bid: p, ask: p, last: p, ts: ++ts });
+    expect(s.signal!(q(10))).toBe('NEUTRAL');   // warming
+    expect(s.signal!(q(10))).toBe('NEUTRAL');
+    expect(s.signal!(q(10))).toBe('NEUTRAL');   // equal -> NEUTRAL
+    expect(s.signal!(q(16))).toBe('BULLISH');   // fast 13 > slow 12
+  });
 });

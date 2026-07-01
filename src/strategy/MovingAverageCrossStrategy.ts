@@ -1,5 +1,7 @@
 import type { Strategy, OrderIntent, StrategyDecisionContext } from './Strategy.js';
 import type { Currency, TradingMode } from '../domain/types.js';
+import type { Signal } from './signal.js';
+import { signalToIntent } from './signal.js';
 import { isValidQuantity } from '../domain/money.js';
 
 export interface MaCrossConfig {
@@ -42,28 +44,25 @@ export class MovingAverageCrossStrategy implements Strategy {
     this.mode = cfg.mode;
   }
 
-  evaluate({ quote, position }: StrategyDecisionContext): OrderIntent | null {
-    if (quote.ts <= this.lastSeenTs) return null;   // ignore re-delivered / same-bar ticks
+  signal(quote: { ts: number; last: number }): Signal {
+    if (quote.ts <= this.lastSeenTs) return 'NEUTRAL';   // ignore re-delivered / same-bar ticks
     this.lastSeenTs = quote.ts;
 
     this.prices.push(quote.last);
     if (this.prices.length > this.cfg.slowPeriod) this.prices.shift();   // bounded window
-    if (this.prices.length < this.cfg.slowPeriod) return null;           // not enough history yet
+    if (this.prices.length < this.cfg.slowPeriod) return 'NEUTRAL';      // not enough history yet
 
     const fast = sma(this.prices, this.cfg.fastPeriod);
     const slow = sma(this.prices, this.cfg.slowPeriod);
-    const held = position?.quantity ?? 0;
 
-    if (fast > slow && held === 0) {                                     // want long, am flat
-      const raw = this.cfg.orderNotional / quote.last;
-      const qty = this.currency === 'KRW' ? Math.floor(raw) : raw;
-      if (!isValidQuantity(qty, this.currency)) return null;
-      return { side: 'BUY', quantity: qty, orderType: 'MARKET', reason: `SMA${this.cfg.fastPeriod} > SMA${this.cfg.slowPeriod}` };
-    }
-    if (fast < slow && held > 0) {                                       // want flat, am long
-      return { side: 'SELL', quantity: held, orderType: 'MARKET', reason: `SMA${this.cfg.fastPeriod} < SMA${this.cfg.slowPeriod}` };
-    }
-    return null;   // equality, or already at target -> hold
+    if (fast > slow) return 'BULLISH';
+    if (fast < slow) return 'BEARISH';
+    return 'NEUTRAL';
+  }
+
+  evaluate({ quote, position }: StrategyDecisionContext): OrderIntent | null {
+    return signalToIntent(this.signal(quote), position?.quantity ?? 0,
+      { currency: this.currency, price: quote.last, orderNotional: this.cfg.orderNotional });
   }
 
   // Persist the price window so a restart doesn't cold-start the indicator while holding
