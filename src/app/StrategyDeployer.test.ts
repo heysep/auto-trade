@@ -254,4 +254,32 @@ describe('StrategyDeployer', () => {
     const next = deployer.deploy({ symbol: '000660', spec: thresholdSpec, name: 'b' });
     expect(next.id).toBe(20);
   });
+
+  it('undeploy keeps watchList symbol if a static registry strategy still uses it', () => {
+    const registry = new StrategyRegistry();
+    const watchList = new WatchList();
+    const deployer = new StrategyDeployer(
+      { engine: makeEngine(), registry, watchList, currency: 'KRW', mode: 'PAPER' },
+      1,
+    );
+
+    // Register a static (non-deployer) strategy directly in the registry
+    const staticStrategy = {
+      id: 9999,
+      symbols: new Set(['005930']),
+      currency: 'KRW' as const,
+      mode: 'PAPER' as const,
+      evaluate: vi.fn(),
+    };
+    registry.register(staticStrategy, 'static-strategy', 'LIVE');
+
+    // Deploy a dynamic strategy on the same symbol
+    const dynamicRecord = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'dynamic' });
+
+    // Undeploy the dynamic strategy
+    deployer.undeploy(dynamicRecord.id);
+
+    // Symbol should STILL be in watchList because the static strategy uses it
+    expect(watchList.list()).toContainEqual({ symbol: '005930', market: 'KR' });
+  });
 });

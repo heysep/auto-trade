@@ -67,9 +67,8 @@ export class StrategyDeployer {
     registry.remove(id);
     this.records_.delete(id);
 
-    // Only remove from watchList if no other deployed record uses the symbol
-    const symbolStillUsed = [...this.records_.values()].some(r => r.symbol === record.symbol);
-    if (!symbolStillUsed) {
+    // Only remove from watchList if no other strategy (deployed or static) uses the symbol
+    if (!registry.list().some((v) => v.symbols.includes(record.symbol))) {
       watchList.remove(record.symbol);
     }
 
