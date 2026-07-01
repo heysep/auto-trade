@@ -85,6 +85,18 @@ describe('HTTP API', () => {
     expect(res.body).toMatch(/replace\(\/\[&<>/);   // cell() escapes interpolated values (anti-XSS)
   });
 
+  it('composer page: lightweight-charts CDN, backtest UI, deploy button, anti-XSS helper', async () => {
+    const { app } = harness();
+    const res = await app.inject({ method: 'GET', url: '/' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    expect(res.headers['content-type']).toMatch(/charset=utf-8/);
+    expect(res.body).toContain('lightweight-charts');
+    expect(res.body).toContain('백테스트');
+    expect(res.body).toContain('페이퍼 배포');
+    expect(res.body).toContain('esc(');
+  });
+
   it('404s unknown strategy/quote; 400s a bad mode', async () => {
     const { app } = harness();
     expect((await app.inject({ method: 'GET', url: '/api/strategies/99' })).statusCode).toBe(404);
