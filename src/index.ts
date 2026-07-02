@@ -238,7 +238,7 @@ export function bootstrap() {
     {
       strategyId: FACTOR_PORTFOLIO_STRATEGY_ID,
       topN: 10,
-      totalNotional: 10_000_000,
+      totalNotional: 100_000_000,   // ₩100M so each of 10 large-caps gets a fillable ~₩10M slice
       currency: 'KRW',
       mode: 'PAPER',
     },
