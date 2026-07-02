@@ -241,6 +241,23 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return result;
   });
 
+  // --- auto-rebalance scheduler control ---
+  app.get('/api/factors/autorebalance', async (_req, reply) => {
+    const result = system.autoRebalanceStatus();
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
+  app.post('/api/factors/autorebalance', async (req, reply) => {
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') {
+      return reply.code(400).send({ error: 'enabled (boolean) is required' });
+    }
+    const result = system.setAutoRebalance(body.enabled);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
   return app;
 }
 

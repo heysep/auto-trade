@@ -14,6 +14,7 @@ import type { StrategyDeployer } from './StrategyDeployer.js';
 import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
 import type { FactorPortfolioManager, RebalancePlan } from '../factor/FactorPortfolioManager.js';
+import type { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -59,6 +60,8 @@ export interface TradingSystemDeps {
   getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
   /** Top-N override for rebalance. Default: 10. */
   factorPortfolioTopN?: number;
+  /** Auto-rebalance scheduler. Omitted => autoRebalanceStatus()/setAutoRebalance() return 503. */
+  rebalanceScheduler?: RebalanceScheduler;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -263,6 +266,19 @@ export class TradingSystem {
     }
 
     return mgr.rebalance();
+  }
+
+  autoRebalanceStatus(): { enabled: boolean; intervalMs: number; lastRun: ReturnType<RebalanceScheduler['lastRun']> } | { error: string; code: number } {
+    const sched = this.deps.rebalanceScheduler;
+    if (sched === undefined) return { error: 'auto-rebalance scheduler not wired', code: 503 };
+    return { enabled: sched.enabled, intervalMs: sched.intervalMs, lastRun: sched.lastRun() };
+  }
+
+  setAutoRebalance(enabled: boolean): { enabled: boolean; intervalMs: number; lastRun: ReturnType<RebalanceScheduler['lastRun']> } | { error: string; code: number } {
+    const sched = this.deps.rebalanceScheduler;
+    if (sched === undefined) return { error: 'auto-rebalance scheduler not wired', code: 503 };
+    if (enabled) { sched.start(); } else { sched.stop(); }
+    return { enabled: sched.enabled, intervalMs: sched.intervalMs, lastRun: sched.lastRun() };
   }
 
   async backtest(input: {

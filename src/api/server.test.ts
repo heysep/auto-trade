@@ -25,6 +25,7 @@ import { FactorPortfolioManager } from '../factor/FactorPortfolioManager.js';
 import type { RebalancePlan } from '../factor/FactorPortfolioManager.js';
 import type { TossPriceItem } from '../toss/types.js';
 import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
+import { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -43,6 +44,7 @@ function harness(opts: {
   factorPortfolio?: FactorPortfolioManager;
   getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
   factorPortfolioTopN?: number;
+  rebalanceScheduler?: RebalanceScheduler;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -80,6 +82,7 @@ function harness(opts: {
     ...(opts.factorPortfolio !== undefined ? { factorPortfolio: opts.factorPortfolio } : {}),
     ...(opts.getPrices !== undefined ? { getPrices: opts.getPrices } : {}),
     ...(opts.factorPortfolioTopN !== undefined ? { factorPortfolioTopN: opts.factorPortfolioTopN } : {}),
+    ...(opts.rebalanceScheduler !== undefined ? { rebalanceScheduler: opts.rebalanceScheduler } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer, book, repo };
 }
@@ -658,5 +661,97 @@ describe('POST /api/factors/rebalance', () => {
       expect(qRes.statusCode).toBe(200);
       expect(qRes.json().last).toBe(75000);
     }
+  });
+});
+
+describe('GET /api/factors/autorebalance', () => {
+  it('returns 503 when rebalanceScheduler is absent', async () => {
+    const { app } = harness();
+    const res = await app.inject({ method: 'GET', url: '/api/factors/autorebalance' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json<{ error: string }>().error).toMatch(/scheduler not wired/);
+  });
+
+  it('returns status when scheduler is present', async () => {
+    const scheduler = new RebalanceScheduler({
+      rebalance: async () => {},
+      isHalted: () => false,
+      isTradingDay: () => true,
+      intervalMs: 86_400_000,
+    });
+    const { app } = harness({ rebalanceScheduler: scheduler });
+    const res = await app.inject({ method: 'GET', url: '/api/factors/autorebalance' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ enabled: boolean; intervalMs: number }>();
+    expect(body.enabled).toBe(false);
+    expect(body.intervalMs).toBe(86_400_000);
+  });
+});
+
+describe('POST /api/factors/autorebalance', () => {
+  it('returns 503 when rebalanceScheduler is absent', async () => {
+    const { app } = harness();
+    const res = await app.inject({
+      method: 'POST', url: '/api/factors/autorebalance',
+      payload: { enabled: true },
+    });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('starts the scheduler when enabled:true is posted', async () => {
+    const setIntervalFn = vi.fn((_fn: () => void, _ms: number) => ({}) as ReturnType<typeof setInterval>);
+    const clearIntervalFn = vi.fn();
+    const scheduler = new RebalanceScheduler({
+      rebalance: async () => {},
+      isHalted: () => false,
+      isTradingDay: () => true,
+      intervalMs: 1000,
+      setIntervalFn,
+      clearIntervalFn,
+    });
+    const { app } = harness({ rebalanceScheduler: scheduler });
+    const res = await app.inject({
+      method: 'POST', url: '/api/factors/autorebalance',
+      payload: { enabled: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ enabled: boolean }>().enabled).toBe(true);
+    expect(setIntervalFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the scheduler when enabled:false is posted', async () => {
+    const clearIntervalFn = vi.fn();
+    const scheduler = new RebalanceScheduler({
+      rebalance: async () => {},
+      isHalted: () => false,
+      isTradingDay: () => true,
+      intervalMs: 1000,
+      setIntervalFn: (_fn, _ms) => ({}) as ReturnType<typeof setInterval>,
+      clearIntervalFn,
+    });
+    scheduler.start();
+    const { app } = harness({ rebalanceScheduler: scheduler });
+    const res = await app.inject({
+      method: 'POST', url: '/api/factors/autorebalance',
+      payload: { enabled: false },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ enabled: boolean }>().enabled).toBe(false);
+    expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 400 when enabled field is missing', async () => {
+    const scheduler = new RebalanceScheduler({
+      rebalance: async () => {},
+      isHalted: () => false,
+      isTradingDay: () => true,
+      intervalMs: 1000,
+    });
+    const { app } = harness({ rebalanceScheduler: scheduler });
+    const res = await app.inject({
+      method: 'POST', url: '/api/factors/autorebalance',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
