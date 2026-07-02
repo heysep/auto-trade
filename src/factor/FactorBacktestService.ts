@@ -171,7 +171,7 @@ export class FactorBacktestService {
 
         matrix.push({
           symbol: stock.symbol,
-          sector: stock.market || 'KR',
+          sector: stock.sector ?? stock.market ?? 'KR',
           series,
         });
         fetched++;

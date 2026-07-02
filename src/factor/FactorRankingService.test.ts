@@ -671,4 +671,57 @@ describe('FactorRankingService', () => {
       }
     });
   });
+
+  describe('sector pass-through', () => {
+    it('UniverseEntry.sector is taken from stock.sector when present', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Universe with distinct sectors so we can verify pass-through
+      const universe: TossStock[] = [
+        { symbol: 'RISING',  name: 'Rising',  market: 'KR', sector: '반도체' },
+        { symbol: 'FALLING', name: 'Falling', market: 'KR', sector: '자동차' },
+        { symbol: 'FLAT',    name: 'Flat',    market: 'KR', sector: '금융'   },
+      ];
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      // Each ScoredSymbol.sector must reflect the stock's sector, not 'KR'
+      for (const scored of result.scored) {
+        const stock = universe.find((s) => s.symbol === scored.symbol);
+        expect(stock).toBeDefined();
+        expect(scored.sector).toBe(stock?.sector);
+      }
+    });
+
+    it('falls back to stock.market when sector is absent', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      const universe: TossStock[] = [
+        { symbol: 'RISING',  name: 'Rising',  market: 'KOSPI'  }, // no sector
+        { symbol: 'FALLING', name: 'Falling', market: 'KOSDAQ' }, // no sector
+        { symbol: 'FLAT',    name: 'Flat',    market: 'KOSPI'  }, // no sector
+      ];
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      // With no sector field, must fall back to market string
+      for (const scored of result.scored) {
+        const stock = universe.find((s) => s.symbol === scored.symbol);
+        expect(stock).toBeDefined();
+        expect(scored.sector).toBe(stock?.market);
+      }
+    });
+  });
 });

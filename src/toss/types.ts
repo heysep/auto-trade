@@ -100,6 +100,8 @@ export interface TossStock {
   currency?: string;
   /** Total shares outstanding (number of issued shares). Parsed from the API string field. */
   sharesOutstanding?: number;
+  /** KRX sector classification (Korean label, e.g. '반도체', '자동차'). */
+  sector?: string;
 }
 
 // --- Candle chart (GET /api/v1/candles) ---

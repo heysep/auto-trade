@@ -141,7 +141,7 @@ export class FactorRankingService {
 
         entries.push({
           symbol: stock.symbol,
-          sector: stock.market || 'KR',
+          sector: stock.sector ?? stock.market ?? 'KR',
           prices,
         });
         fetched++;
