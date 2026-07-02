@@ -32,6 +32,8 @@ import { FactorBacktestService } from './factor/FactorBacktestService.js';
 import { FactorModel } from './factor/FactorModel.js';
 import { DartApiClient } from './dart/DartApiClient.js';
 import { FundamentalsService } from './factor/FundamentalsService.js';
+import { FactorPortfolioManager } from './factor/FactorPortfolioManager.js';
+import { FACTOR_PORTFOLIO_STRATEGY_ID } from './app/TradingSystem.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
@@ -117,6 +119,17 @@ export function bootstrap() {
     registry.register(s, `strategy-${s.id}`, 'PAPER_TESTING');
   }
 
+  // Reserved stub for the AQR 4-Factor Portfolio (id=1000). Registered in registry only —
+  // NOT in StrategyEngine tick loop. Lifecycle managed by rebalanceFactorPortfolio() HTTP trigger.
+  const factorStrategy: Strategy = {
+    id: FACTOR_PORTFOLIO_STRATEGY_ID,
+    symbols: new Set<string>(),
+    currency: 'KRW',
+    mode: 'PAPER',
+    evaluate: () => null,
+  };
+  registry.register(factorStrategy, 'AQR 4-Factor Portfolio', 'PAPER_TESTING');
+
   // Build the watchList seeded from static strategies' symbols (deduped — WatchList.add is idempotent).
   const watchList = new WatchList(
     strategies.flatMap((s) => [...s.symbols].map((symbol) => ({ symbol, market: marketOf(s.currency) }))),
@@ -198,6 +211,40 @@ export function bootstrap() {
     model: new FactorModel(),
   });
 
+  // FactorPortfolioManager: rebalance-driven (HTTP trigger), PAPER only.
+  // submitIntent bridges PortfolioOrderIntent → OrderManager.handleIntent.
+  const factorPortfolio = new FactorPortfolioManager(
+    {
+      ranking: factorRanking,
+      priceOf: (sym) => book.getQuote(sym)?.last,
+      currentQty: (sym) => {
+        const pos = repo.getPosition(FACTOR_PORTFOLIO_STRATEGY_ID, sym, 'PAPER');
+        return pos?.quantity ?? 0;
+      },
+      heldSymbols: () =>
+        repo.getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, 'PAPER')
+          .filter((p) => p.quantity !== 0)
+          .map((p) => p.symbol),
+      submitIntent: async (pIntent) => {
+        const quote = book.getQuote(pIntent.symbol);
+        if (quote === undefined) throw new Error(`no quote for ${pIntent.symbol}`);
+        await orderManager.handleIntent(
+          factorStrategy,
+          { side: pIntent.side, quantity: pIntent.quantity, orderType: 'MARKET', reason: pIntent.reason },
+          quote,
+        );
+      },
+      isHalted: () => haltSwitch.halted,
+    },
+    {
+      strategyId: FACTOR_PORTFOLIO_STRATEGY_ID,
+      topN: 10,
+      totalNotional: 10_000_000,
+      currency: 'KRW',
+      mode: 'PAPER',
+    },
+  );
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -207,6 +254,9 @@ export function bootstrap() {
     deployer,
     factorRanking,
     factorBacktest,
+    factorPortfolio,
+    getPrices: (s) => client.getPrices(s),
+    factorPortfolioTopN: 10,
   });
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
