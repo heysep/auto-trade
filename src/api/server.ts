@@ -303,6 +303,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .sitem-del:hover{background:#3a1418}
 /* ---- misc ---- */
 .empty{padding:12px 14px;color:#2a3550;font-size:11px}
+/* ---- factor ranking ---- */
+.rank-row:hover{background:#0d1421}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#1c2230;border-radius:2px}
@@ -411,6 +413,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     <button class="tab-btn active" data-tab="positions">포지션</button>
     <button class="tab-btn" data-tab="strategies">전략목록</button>
     <button class="tab-btn" data-tab="logs">로그</button>
+    <button class="tab-btn" data-tab="ranking">팩터 랭킹</button>
   </div>
   <div class="tab-content">
     <div id="tab-positions" class="tab-pane">
@@ -426,6 +429,17 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <table>
         <thead><tr><th>시각</th><th>유형</th><th>메시지</th></tr></thead>
         <tbody id="log-body"></tbody>
+      </table>
+    </div>
+    <div id="tab-ranking" class="tab-pane" style="display:none">
+      <div style="position:sticky;top:0;background:var(--pn);border-bottom:1px solid var(--bd);padding:5px 10px;display:flex;align-items:center;gap:8px;z-index:2">
+        <button id="btn-rank-refresh" style="background:none;color:#5a9eff;border:1px solid #1c3060;border-radius:3px;padding:2px 8px;cursor:pointer;font:inherit;font-size:10px">새로고침</button>
+        <span id="rank-caption" style="font-size:10px;color:var(--mu)"></span>
+      </div>
+      <div id="rank-status" class="empty" style="display:none"></div>
+      <table id="rank-table" style="display:none">
+        <thead><tr><th>순위</th><th>종목</th><th>섹터</th><th class="num">Composite</th><th class="num">Momentum</th><th class="num">Defensive</th></tr></thead>
+        <tbody id="rank-tbody"></tbody>
       </table>
     </div>
   </div>
@@ -840,6 +854,99 @@ function refreshAll() {
 
 refreshAll();
 setInterval(refreshAll, 3000);
+
+/* ---- Factor Ranking (load on tab-open + manual refresh; NOT in the 3s auto-poll) ---- */
+var rankLoaded = false;
+var rankLoading = false;
+
+function renderRanking(data) {
+  var status = document.getElementById('rank-status');
+  var table = document.getElementById('rank-table');
+  var tbody = document.getElementById('rank-tbody');
+  var caption = document.getElementById('rank-caption');
+  if (!data || !Array.isArray(data.scored) || !data.scored.length) {
+    status.textContent = '랭킹 데이터 없음';
+    status.style.display = '';
+    table.style.display = 'none';
+    return;
+  }
+  var asOfDate = new Date(data.asOf);
+  caption.textContent = 'asOf ' + asOfDate.toLocaleTimeString() + ' \xb7 universe ' + data.universeSize + ' \xb7 fetched ' + data.fetched;
+  tbody.innerHTML = data.scored.map(function(row) {
+    var composite = Number(row.composite);
+    var compositeStr = isFinite(composite) ? composite.toFixed(3) : '-';
+    var compositeColor = composite >= 0 ? 'pos' : 'neg';
+    var momentum = (row.factors && row.factors.momentum != null) ? Number(row.factors.momentum).toFixed(2) : '';
+    var defensive = (row.factors && row.factors.defensive != null) ? Number(row.factors.defensive).toFixed(2) : '';
+    return '<tr class="rank-row" data-sym="' + esc(row.symbol) + '" style="cursor:pointer">' +
+      '<td class="num">' + esc(String(row.rank)) + '</td>' +
+      '<td>' + esc(row.symbol) + '</td>' +
+      '<td>' + esc(row.sector || '') + '</td>' +
+      '<td class="num ' + compositeColor + '">' + esc(compositeStr) + '</td>' +
+      '<td class="num">' + esc(momentum) + '</td>' +
+      '<td class="num">' + esc(defensive) + '</td>' +
+    '</tr>';
+  }).join('');
+  table.querySelectorAll('.rank-row').forEach(function(tr) {
+    tr.addEventListener('click', function() { selectSymbol(this.dataset.sym); });
+  });
+  status.style.display = 'none';
+  table.style.display = '';
+}
+
+function loadRanking() {
+  if (rankLoading) return;
+  rankLoading = true;
+  rankLoaded = false;
+  var status = document.getElementById('rank-status');
+  var table = document.getElementById('rank-table');
+  var caption = document.getElementById('rank-caption');
+  status.textContent = '랭킹 계산 중… (최초 최대 40초)';
+  status.style.display = '';
+  table.style.display = 'none';
+  caption.textContent = '';
+  fetch('/api/factors/ranking?limit=20').then(function(r) {
+    if (r.status === 503) {
+      return r.json().then(function() {
+        status.textContent = '팩터 랭킹 비활성';
+        status.style.display = '';
+        table.style.display = 'none';
+        rankLoading = false;
+      });
+    }
+    if (!r.ok) {
+      return r.json().then(function(d) {
+        status.textContent = '오류: ' + (d.error || '알 수 없음');
+        status.style.display = '';
+        table.style.display = 'none';
+        rankLoading = false;
+      });
+    }
+    return r.json().then(function(data) {
+      rankLoading = false;
+      rankLoaded = true;
+      renderRanking(data);
+    });
+  }).catch(function() {
+    rankLoading = false;
+    var s = document.getElementById('rank-status');
+    var t = document.getElementById('rank-table');
+    if (s) { s.textContent = '네트워크 오류'; s.style.display = ''; }
+    if (t) t.style.display = 'none';
+  });
+}
+
+var rankTabBtn = document.querySelector('[data-tab="ranking"]');
+if (rankTabBtn) {
+  rankTabBtn.addEventListener('click', function() {
+    if (!rankLoaded && !rankLoading) loadRanking();
+  });
+}
+
+var rankRefreshBtn = document.getElementById('btn-rank-refresh');
+if (rankRefreshBtn) {
+  rankRefreshBtn.addEventListener('click', function() { loadRanking(); });
+}
 <\/script>
 </body>
 </html>`;

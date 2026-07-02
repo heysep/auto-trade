@@ -100,6 +100,7 @@ describe('HTTP API', () => {
     expect(res.body).toContain('백테스트');
     expect(res.body).toContain('페이퍼 배포');
     expect(res.body).toContain('esc(');
+    expect(res.body).toContain('팩터 랭킹');
   });
 
   it('404s unknown strategy/quote; 400s a bad mode', async () => {
