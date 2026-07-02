@@ -12,6 +12,7 @@ import { BacktestEngine } from '../backtest/BacktestEngine.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
 import type { StrategyDeployer } from './StrategyDeployer.js';
 import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
+import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -46,6 +47,8 @@ export interface TradingSystemDeps {
   deployer?: StrategyDeployer;
   /** Universe factor ranking service. Omitted => factorRanking() returns 503. */
   factorRanking?: FactorRankingService;
+  /** Universe factor backtest service. Omitted => factorBacktest() returns 503. */
+  factorBacktest?: FactorBacktestService;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -159,6 +162,21 @@ export class TradingSystem {
   /** Remove a deployed strategy by id. Returns false if unknown. */
   undeploy(id: number): boolean {
     return this.deps.deployer?.undeploy(id) ?? false;
+  }
+
+  /**
+   * Run a factor backtest over the universe price matrix.
+   * Returns a 503 error shape when no FactorBacktestService is wired.
+   */
+  async factorBacktest(params?: FactorBacktestParams): Promise<FactorBacktestReport | { error: string; code: number }> {
+    const svc = this.deps.factorBacktest;
+    if (svc === undefined) {
+      return { error: 'factor backtest unavailable', code: 503 };
+    }
+    if (params !== undefined) {
+      return svc.run(params);
+    }
+    return svc.run();
   }
 
   /**

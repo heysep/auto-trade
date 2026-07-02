@@ -28,6 +28,7 @@ import { SymbolCatalog } from './market/SymbolCatalog.js';
 import { KRX_SYMBOLS } from './market/krxSymbols.js';
 import { buildServer } from './api/server.js';
 import { FactorRankingService } from './factor/FactorRankingService.js';
+import { FactorBacktestService } from './factor/FactorBacktestService.js';
 import { FactorModel } from './factor/FactorModel.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
@@ -172,6 +173,14 @@ export function bootstrap() {
     model: new FactorModel(),
   });
 
+  // Factor backtest: same KRX universe + 500 daily bars → BacktestSymbol[] matrix (cached 1h).
+  // FactorBacktest engine runs per-request (cheap) against the cached matrix.
+  const factorBacktest = new FactorBacktestService({
+    universe: () => KRX_SYMBOLS,
+    getCandles: (s, i, n) => client.getCandles(s, i, n),
+    model: new FactorModel(),
+  });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -180,6 +189,7 @@ export function bootstrap() {
     getCandles: (s, i) => client.getCandles(s, i),
     deployer,
     factorRanking,
+    factorBacktest,
   });
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 

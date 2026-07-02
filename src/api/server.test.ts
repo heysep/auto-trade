@@ -12,6 +12,7 @@ import { StrategyEngine } from '../strategy/StrategyEngine.js';
 import { WatchList } from '../market/WatchList.js';
 import { StrategyDeployer } from '../app/StrategyDeployer.js';
 import { FactorRankingService } from '../factor/FactorRankingService.js';
+import { FactorBacktestService } from '../factor/FactorBacktestService.js';
 import { FactorModel } from '../factor/FactorModel.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote } from '../domain/types.js';
@@ -19,6 +20,7 @@ import type { TossCandle, TossStock, ChartCandle } from '../toss/types.js';
 import type { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
 import type { RankingResult } from '../factor/FactorRankingService.js';
+import type { FactorBacktestReport } from '../factor/FactorBacktestService.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -33,6 +35,7 @@ function harness(opts: {
   /** When true, harness builds a StrategyEngine + WatchList + StrategyDeployer sharing the same registry as the system. */
   withDeployer?: boolean;
   factorRanking?: FactorRankingService;
+  factorBacktest?: FactorBacktestService;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -66,6 +69,7 @@ function harness(opts: {
     ...(opts.getCandles ? { getCandles: opts.getCandles } : {}),
     ...(deployer ? { deployer } : {}),
     ...(opts.factorRanking !== undefined ? { factorRanking: opts.factorRanking } : {}),
+    ...(opts.factorBacktest !== undefined ? { factorBacktest: opts.factorBacktest } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer };
 }
@@ -427,6 +431,101 @@ describe('HTTP API', () => {
       const res = await app.inject({ method: 'GET', url: '/api/factors/ranking' });
       expect(res.statusCode).toBe(503);
       expect(res.json<{ error: string }>().error).toBe('factor ranking unavailable');
+    });
+  });
+
+  describe('POST /api/factors/backtest', () => {
+    const SMALL_PERIODS = { momSkip: 1, momLong: 3, momMid: 2, volWindow: 3, mddWindow: 3 };
+    const BT_UNIVERSE: TossStock[] = [
+      { symbol: 'A', name: 'Alpha',  market: 'KOSPI'  },
+      { symbol: 'B', name: 'Beta',   market: 'KOSDAQ' },
+      { symbol: 'C', name: 'Gamma',  market: 'KOSPI'  },
+    ];
+    function makeBtCandles(closes: number[]): TossCandle[] {
+      return closes.map((close, i) => ({
+        timestamp: new Date(86_400_000 * (i + 1)).toISOString(),
+        openPrice: String(close),
+        highPrice: String(close),
+        lowPrice: String(close),
+        closePrice: String(close),
+      }));
+    }
+    const BT_CLOSES: Record<string, number[]> = {
+      A: [100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122],
+      B: [100,  80, 120,  60,  50,  55,  60,  65,  70,  75,  80,  85],
+      C: [100, 100, 100, 100, 100, 101, 101, 102, 102, 103, 103, 104],
+    };
+
+    function btFactorHarness() {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const svc = new FactorBacktestService({
+        universe: () => BT_UNIVERSE,
+        getCandles: async (symbol: string, _interval: '1d', _count: number): Promise<TossCandle[]> => {
+          const data = BT_CLOSES[symbol];
+          if (data === undefined) throw new Error(`unknown: ${symbol}`);
+          return makeBtCandles(data);
+        },
+        model,
+      });
+      return harness({ factorBacktest: svc });
+    }
+
+    it('returns 200 with a backtest report when FactorBacktestService is wired', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { topN: 2, rebalanceEvery: 3 },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<FactorBacktestReport>();
+      expect(body.universeSize).toBe(3);
+      expect(body.fetched).toBe(3);
+      expect(body.skipped).toBe(0);
+      expect(Array.isArray(body.result.equityCurve)).toBe(true);
+      expect(Array.isArray(body.result.rebalances)).toBe(true);
+      expect(typeof body.result.metrics.totalReturn).toBe('number');
+      expect(typeof body.result.metrics.finalNav).toBe('number');
+    });
+
+    it('returns 503 when FactorBacktestService is not wired', async () => {
+      const { app } = harness(); // no factorBacktest
+      const res = await app.inject({ method: 'POST', url: '/api/factors/backtest', payload: {} });
+      expect(res.statusCode).toBe(503);
+      expect(res.json<{ error: string }>().error).toBe('factor backtest unavailable');
+    });
+
+    it('returns 400 for topN: -1', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { topN: -1 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/topN/);
+    });
+
+    it('returns 400 for rebalanceEvery: 0', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { rebalanceEvery: 0 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/rebalanceEvery/);
+    });
+
+    it('returns 400 for startCapital: -1000', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { startCapital: -1000 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/startCapital/);
     });
   });
 });

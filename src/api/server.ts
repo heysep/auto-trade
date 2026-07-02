@@ -176,6 +176,45 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     });
   });
 
+  // --- factor backtest ---
+  app.post('/api/factors/backtest', async (req, reply) => {
+    const body = (req.body ?? {}) as { topN?: unknown; rebalanceEvery?: unknown; startCapital?: unknown };
+
+    if (body.topN !== undefined) {
+      const n = Number(body.topN);
+      if (!Number.isInteger(n) || n <= 0) {
+        return reply.code(400).send({ error: 'topN must be a positive integer' });
+      }
+    }
+    if (body.rebalanceEvery !== undefined) {
+      const n = Number(body.rebalanceEvery);
+      if (!Number.isInteger(n) || n <= 0) {
+        return reply.code(400).send({ error: 'rebalanceEvery must be a positive integer' });
+      }
+    }
+    if (body.startCapital !== undefined) {
+      const n = Number(body.startCapital);
+      if (!Number.isFinite(n) || n <= 0) {
+        return reply.code(400).send({ error: 'startCapital must be a positive number' });
+      }
+    }
+
+    const params = {
+      ...(body.topN !== undefined ? { topN: Number(body.topN) } : {}),
+      ...(body.rebalanceEvery !== undefined ? { rebalanceEvery: Number(body.rebalanceEvery) } : {}),
+      ...(body.startCapital !== undefined ? { startCapital: Number(body.startCapital) } : {}),
+    };
+
+    const result = Object.keys(params).length > 0
+      ? await system.factorBacktest(params)
+      : await system.factorBacktest();
+
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
   // --- factor ranking ---
   app.get('/api/factors/ranking', async (req, reply) => {
     const q = req.query as { limit?: string };
