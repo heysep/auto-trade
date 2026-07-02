@@ -292,6 +292,7 @@ export function bootstrap() {
     getPrices: (s) => client.getPrices(s),
     factorPortfolioTopN: 10,
     rebalanceScheduler,
+    performance: perf,
   });
   systemRef = system;
 

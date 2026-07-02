@@ -10,6 +10,7 @@ import type { TossStock, TossCandle, ChartCandle, TossPriceItem } from '../toss/
 import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
 import { BacktestEngine } from '../backtest/BacktestEngine.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
+import type { PerformanceService } from '../performance/PerformanceService.js';
 import type { StrategyDeployer } from './StrategyDeployer.js';
 import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
@@ -62,6 +63,8 @@ export interface TradingSystemDeps {
   factorPortfolioTopN?: number;
   /** Auto-rebalance scheduler. Omitted => autoRebalanceStatus()/setAutoRebalance() return 503. */
   rebalanceScheduler?: RebalanceScheduler;
+  /** Performance metrics + equity curve service. Omitted => performance() returns 503. */
+  performance?: PerformanceService;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -279,6 +282,15 @@ export class TradingSystem {
     if (sched === undefined) return { error: 'auto-rebalance scheduler not wired', code: 503 };
     if (enabled) { sched.start(); } else { sched.stop(); }
     return { enabled: sched.enabled, intervalMs: sched.intervalMs, lastRun: sched.lastRun() };
+  }
+
+  performance(strategyId: number, mode: TradingMode): { metrics: PerformanceMetrics; equityCurve: { day: string; nav: number }[] } | { error: string; code: number } {
+    const svc = this.deps.performance;
+    if (svc === undefined) return { error: 'performance service unavailable', code: 503 };
+    return {
+      metrics: svc.metrics(strategyId, mode),
+      equityCurve: this.deps.repo.getEquitySnapshots(strategyId, mode).map((s) => ({ day: s.day, nav: s.nav })),
+    };
   }
 
   async backtest(input: {

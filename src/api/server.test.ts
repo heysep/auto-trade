@@ -26,6 +26,8 @@ import type { RebalancePlan } from '../factor/FactorPortfolioManager.js';
 import type { TossPriceItem } from '../toss/types.js';
 import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
 import { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
+import { PerformanceService } from '../performance/PerformanceService.js';
+import { InMemoryTradeTracker } from '../risk/TradeTracker.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -45,6 +47,8 @@ function harness(opts: {
   getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
   factorPortfolioTopN?: number;
   rebalanceScheduler?: RebalanceScheduler;
+  /** When true, harness creates a PerformanceService sharing the same repo instance. */
+  withPerformanceService?: boolean;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -71,6 +75,10 @@ function harness(opts: {
     deployer = new StrategyDeployer({ engine, registry, watchList, currency: 'KRW', mode: 'PAPER' }, 10);
   }
 
+  const perfSvc = opts.withPerformanceService
+    ? new PerformanceService(repo, new InMemoryTradeTracker(), () => 10_000_000)
+    : undefined;
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch, now: () => 0,
     ...(opts.promotionInputFor ? { promotionInputFor: opts.promotionInputFor } : {}),
@@ -83,6 +91,7 @@ function harness(opts: {
     ...(opts.getPrices !== undefined ? { getPrices: opts.getPrices } : {}),
     ...(opts.factorPortfolioTopN !== undefined ? { factorPortfolioTopN: opts.factorPortfolioTopN } : {}),
     ...(opts.rebalanceScheduler !== undefined ? { rebalanceScheduler: opts.rebalanceScheduler } : {}),
+    ...(perfSvc !== undefined ? { performance: perfSvc } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer, book, repo };
 }
@@ -121,6 +130,7 @@ describe('HTTP API', () => {
     expect(res.body).toContain('팩터 백테스트');
     expect(res.body).toContain('리밸런싱');
     expect(res.body).toContain('자동 리밸런싱');
+    expect(res.body).toContain('성과');
   });
 
   it('404s unknown strategy/quote; 400s a bad mode', async () => {
@@ -802,5 +812,62 @@ describe('POST /api/factors/autorebalance', () => {
       payload: {},
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('GET /api/performance', () => {
+  it('returns metrics and equityCurve when service is wired', async () => {
+    const { app, repo } = harness({ withPerformanceService: true });
+    repo.saveEquitySnapshot({ strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, mode: 'PAPER', nav: 10_500_000, cash: 1_000_000, day: '2026-01-01' });
+    repo.saveEquitySnapshot({ strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, mode: 'PAPER', nav: 10_800_000, cash: 900_000, day: '2026-01-02' });
+    const res = await app.inject({ method: 'GET', url: `/api/performance?strategyId=${FACTOR_PORTFOLIO_STRATEGY_ID}&mode=PAPER` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ metrics: Record<string, number>; equityCurve: { day: string; nav: number }[] }>();
+    expect(body).toHaveProperty('metrics');
+    expect(body).toHaveProperty('equityCurve');
+    expect(typeof body.metrics['totalReturn']).toBe('number');
+    expect(body.equityCurve.length).toBe(2);
+    expect(body.equityCurve[0]).toMatchObject({ day: '2026-01-01', nav: 10_500_000 });
+  });
+
+  it('equityCurve reflects stored snapshots in chronological order', async () => {
+    const { app, repo } = harness({ withPerformanceService: true });
+    repo.saveEquitySnapshot({ strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, mode: 'PAPER', nav: 11_000_000, cash: 0, day: '2026-03-01' });
+    repo.saveEquitySnapshot({ strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, mode: 'PAPER', nav: 10_000_000, cash: 0, day: '2026-02-01' });
+    const res = await app.inject({ method: 'GET', url: `/api/performance?strategyId=${FACTOR_PORTFOLIO_STRATEGY_ID}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ equityCurve: { day: string; nav: number }[] }>();
+    expect(body.equityCurve[0]?.day).toBe('2026-02-01');
+    expect(body.equityCurve[1]?.day).toBe('2026-03-01');
+  });
+
+  it('returns 400 on missing strategyId', async () => {
+    const { app } = harness({ withPerformanceService: true });
+    expect((await app.inject({ method: 'GET', url: '/api/performance' })).statusCode).toBe(400);
+  });
+
+  it('returns 400 on non-integer strategyId', async () => {
+    const { app } = harness({ withPerformanceService: true });
+    expect((await app.inject({ method: 'GET', url: '/api/performance?strategyId=abc' })).statusCode).toBe(400);
+  });
+
+  it('returns 400 on invalid mode', async () => {
+    const { app } = harness({ withPerformanceService: true });
+    expect((await app.inject({ method: 'GET', url: `/api/performance?strategyId=${FACTOR_PORTFOLIO_STRATEGY_ID}&mode=INVALID` })).statusCode).toBe(400);
+  });
+
+  it('returns 503 when performance service is not wired', async () => {
+    const { app } = harness();   // no withPerformanceService
+    const res = await app.inject({ method: 'GET', url: `/api/performance?strategyId=${FACTOR_PORTFOLIO_STRATEGY_ID}` });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('defaults mode to PAPER when mode param is absent', async () => {
+    const { app, repo } = harness({ withPerformanceService: true });
+    repo.saveEquitySnapshot({ strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, mode: 'PAPER', nav: 10_200_000, cash: 0, day: '2026-04-01' });
+    const res = await app.inject({ method: 'GET', url: `/api/performance?strategyId=${FACTOR_PORTFOLIO_STRATEGY_ID}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ equityCurve: { day: string; nav: number }[] }>();
+    expect(body.equityCurve.some((p) => p.day === '2026-04-01')).toBe(true);
   });
 });

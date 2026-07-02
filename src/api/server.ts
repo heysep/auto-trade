@@ -267,6 +267,20 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return result;
   });
 
+  app.get('/api/performance', async (req, reply) => {
+    const q = (req.query as Record<string, string | undefined>);
+    const rawId = q['strategyId'];
+    const id = rawId !== undefined ? Number(rawId) : NaN;
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.code(400).send({ error: 'strategyId must be a positive integer' });
+    }
+    const mode = parseModeOr(q['mode'], reply);
+    if (mode === BAD) return;
+    const result = system.performance(id, mode);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
   return app;
 }
 
@@ -409,6 +423,16 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .rb-section-hdr{padding:5px 10px 2px;font-size:10px;color:var(--mu);font-weight:500;text-transform:uppercase;letter-spacing:.05em}
 .rb-order-row{font-size:10px;padding:2px 10px;color:var(--mu);border-bottom:1px solid #0d1219}
 .rb-skip-row{font-size:10px;padding:2px 10px;color:#8a6040;border-bottom:1px solid #0d1219}
+/* ---- 성과 (performance) ---- */
+.perf-header{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--bd);flex-shrink:0}
+.perf-header label{color:var(--mu);font-size:11px}
+#perf-strategy{background:#0b0e14;color:var(--tx);border:1px solid var(--bd);border-radius:3px;padding:2px 6px;font:inherit;font-size:11px}
+#perf-mode{background:#0b0e14;color:var(--tx);border:1px solid var(--bd);border-radius:3px;padding:2px 6px;font:inherit;font-size:11px}
+#perf-status{padding:8px 12px;font-size:11px;color:var(--mu);display:none}
+.perf-metrics{display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;border-bottom:1px solid var(--bd);display:none}
+#perf-chart-wrap{height:160px;flex-shrink:0;position:relative;display:none}
+#perf-chart{width:100%;height:100%}
+#perf-empty{padding:16px 12px;font-size:11px;color:var(--mu);display:none}
 </style>
 </head>
 <body>
@@ -516,6 +540,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     <button class="tab-btn" data-tab="ranking">팩터 랭킹</button>
     <button class="tab-btn" data-tab="fbt">팩터 백테스트</button>
     <button class="tab-btn" data-tab="portfolio">포트폴리오</button>
+    <button class="tab-btn" data-tab="perf">성과</button>
   </div>
   <div class="tab-content">
     <div id="tab-positions" class="tab-pane">
@@ -597,6 +622,32 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
         </div>
       </div>
     </div>
+    <div id="tab-perf" class="tab-pane" style="display:none">
+      <div class="perf-header">
+        <label for="perf-strategy">전략</label>
+        <select id="perf-strategy">
+          <option value="1000">팩터 포트폴리오 (id=1000)</option>
+        </select>
+        <label for="perf-mode">모드</label>
+        <select id="perf-mode">
+          <option value="PAPER">PAPER</option>
+          <option value="LIVE">LIVE</option>
+        </select>
+      </div>
+      <div id="perf-status"></div>
+      <div id="perf-metrics" class="perf-metrics">
+        <div class="metric"><span class="mlabel">수익률</span><span class="mval" id="perf-m-ret"></span></div>
+        <div class="metric"><span class="mlabel">MDD</span><span class="mval" id="perf-m-mdd"></span></div>
+        <div class="metric"><span class="mlabel">승률</span><span class="mval" id="perf-m-wr"></span></div>
+        <div class="metric"><span class="mlabel">PF</span><span class="mval" id="perf-m-pf"></span></div>
+        <div class="metric"><span class="mlabel">거래수</span><span class="mval" id="perf-m-tc"></span></div>
+        <div class="metric"><span class="mlabel">평균손익비</span><span class="mval" id="perf-m-awl"></span></div>
+      </div>
+      <div id="perf-chart-wrap">
+        <div id="perf-chart"></div>
+      </div>
+      <div id="perf-empty">스냅샷 없음 (운용 중 누적)</div>
+    </div>
   </div>
 </div>
 
@@ -676,6 +727,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     var pane = document.getElementById('tab-' + tab);
     if (pane) pane.style.display = '';
     if (tab === 'portfolio') { loadAutoRebalanceStatus(); }
+    if (tab === 'perf') { loadPerfData(); }
   });
 });
 
@@ -1412,6 +1464,129 @@ if (arbToggle) {
       console.error('[arb] toggle outer error:', e);
     }
   });
+}
+
+/* ---- 성과 (Performance) tab — fetch on open + strategy/mode change only, NOT in 3s poll ---- */
+var perfChart = null;
+var perfSeries = null;
+
+function ensurePerfChart(el) {
+  if (perfChart) return true;
+  try {
+    perfChart = LightweightCharts.createChart(el, {
+      layout: { background: { color: '#0b0e14' }, textColor: '#d1d4dc' },
+      grid: { vertLines: { color: '#131722' }, horzLines: { color: '#131722' } },
+      rightPriceScale: { borderColor: '#1c2230' },
+      timeScale: { borderColor: '#1c2230', timeVisible: true },
+      width: el.offsetWidth || 600,
+      height: el.offsetHeight || 160,
+      handleScroll: false,
+      handleScale: false,
+    });
+    perfSeries = perfChart.addAreaSeries({
+      lineColor: '#5a9eff',
+      topColor: 'rgba(90,158,255,0.28)',
+      bottomColor: 'rgba(90,158,255,0.02)',
+      lineWidth: 2,
+    });
+    new ResizeObserver(function() {
+      if (!perfChart) return;
+      perfChart.applyOptions({ width: el.offsetWidth, height: el.offsetHeight });
+    }).observe(el);
+    return true;
+  } catch (e) {
+    console.error('[perf-chart] init failed:', e);
+    perfChart = null;
+    perfSeries = null;
+    return false;
+  }
+}
+
+function loadPerfData() {
+  var stratEl = document.getElementById('perf-strategy');
+  var modeEl = document.getElementById('perf-mode');
+  var statusEl = document.getElementById('perf-status');
+  var metricsEl = document.getElementById('perf-metrics');
+  var chartWrapEl = document.getElementById('perf-chart-wrap');
+  var emptyEl = document.getElementById('perf-empty');
+  var strategyId = stratEl ? stratEl.value : '1000';
+  var mode = modeEl ? modeEl.value : 'PAPER';
+  if (!strategyId) return;
+
+  if (statusEl) { statusEl.textContent = '로딩 중…'; statusEl.style.display = ''; }
+  if (metricsEl) metricsEl.style.display = 'none';
+  if (chartWrapEl) chartWrapEl.style.display = 'none';
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  var tok = localStorage.getItem('apiToken') || '';
+  fetch('/api/performance?strategyId=' + encodeURIComponent(strategyId) + '&mode=' + encodeURIComponent(mode), {
+    headers: { 'x-api-token': tok },
+  }).then(function(r) {
+    return r.json().then(function(d) { return { ok: r.ok, status: r.status, data: d }; });
+  }).then(function(res) {
+    if (statusEl) { statusEl.textContent = ''; statusEl.style.display = 'none'; }
+    if (!res.ok) {
+      if (statusEl) { statusEl.textContent = esc(String(res.data.error || '오류')); statusEl.style.display = ''; }
+      return;
+    }
+    var metrics = res.data.metrics || {};
+    var equityCurve = res.data.equityCurve || [];
+
+    /* metrics strip */
+    var ret = Number(metrics.totalReturn) || 0;
+    var mdd = Number(metrics.maxDrawdown) || 0;
+    var wr = Number(metrics.winRate) || 0;
+    var pf = Number(metrics.profitFactor) || 0;
+    var tc = Number(metrics.tradeCount) || 0;
+    var awl = Number(metrics.avgWinLoss) || 0;
+    var mRetEl = document.getElementById('perf-m-ret');
+    var mMddEl = document.getElementById('perf-m-mdd');
+    var mWrEl = document.getElementById('perf-m-wr');
+    var mPfEl = document.getElementById('perf-m-pf');
+    var mTcEl = document.getElementById('perf-m-tc');
+    var mAwlEl = document.getElementById('perf-m-awl');
+    if (mRetEl) { mRetEl.textContent = (ret * 100).toFixed(2) + '%'; mRetEl.className = 'mval ' + (ret > 0 ? 'pos' : ret < 0 ? 'neg' : 'neu'); }
+    if (mMddEl) { mMddEl.textContent = (mdd * 100).toFixed(2) + '%'; mMddEl.className = 'mval neg'; }
+    if (mWrEl) { mWrEl.textContent = (wr * 100).toFixed(1) + '%'; mWrEl.className = 'mval neu'; }
+    if (mPfEl) { mPfEl.textContent = isFinite(pf) ? pf.toFixed(2) : '∞'; mPfEl.className = 'mval neu'; }
+    if (mTcEl) { mTcEl.textContent = String(tc); mTcEl.className = 'mval neu'; }
+    if (mAwlEl) { mAwlEl.textContent = awl.toFixed(2); mAwlEl.className = 'mval neu'; }
+    if (metricsEl) metricsEl.style.display = 'flex';
+
+    /* equity curve chart */
+    var perfChartEl = document.getElementById('perf-chart');
+    try {
+      if (equityCurve.length && perfChartEl && ensurePerfChart(perfChartEl)) {
+        var seen3 = {};
+        var curveData = equityCurve.map(function(p) {
+          return { time: Math.floor(new Date(p.day).getTime() / 1000), value: Number(p.nav) };
+        }).sort(function(a, b) { return a.time - b.time; }).filter(function(p) {
+          if (seen3[p.time]) return false;
+          seen3[p.time] = true;
+          return true;
+        });
+        if (perfSeries) perfSeries.setData(curveData);
+        if (perfChart) perfChart.timeScale().fitContent();
+        if (chartWrapEl) chartWrapEl.style.display = '';
+      } else if (!equityCurve.length) {
+        if (emptyEl) emptyEl.style.display = '';
+      }
+    } catch (chartErr) {
+      console.error('[perf-chart] render failed:', chartErr);
+    }
+  }).catch(function(e) {
+    console.error('[perf] loadPerfData error:', e);
+    if (statusEl) { statusEl.textContent = '네트워크 오류'; statusEl.style.display = ''; }
+  });
+}
+
+var perfStratEl = document.getElementById('perf-strategy');
+if (perfStratEl) {
+  perfStratEl.addEventListener('change', function() { loadPerfData(); });
+}
+var perfModeEl = document.getElementById('perf-mode');
+if (perfModeEl) {
+  perfModeEl.addEventListener('change', function() { loadPerfData(); });
 }
 
 var rbBtn = document.getElementById('btn-rebalance');
