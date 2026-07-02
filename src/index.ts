@@ -35,6 +35,7 @@ import { FundamentalsService } from './factor/FundamentalsService.js';
 import { FactorPortfolioManager } from './factor/FactorPortfolioManager.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
+import { RebalanceScheduler } from './factor/RebalanceScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
 import type { Currency } from './domain/types.js';
 
@@ -264,6 +265,19 @@ export function bootstrap() {
     },
   );
 
+  const AUTO_REBALANCE = process.env.AUTO_REBALANCE === '1';
+  const REBALANCE_INTERVAL_MS = Number(process.env.REBALANCE_INTERVAL_MS ?? '') || 86_400_000;
+
+  // Construct scheduler before system (rebalance closure captures systemRef lazily to avoid circular dep).
+  let systemRef!: TradingSystem;
+  const rebalanceScheduler = new RebalanceScheduler({
+    rebalance: () => systemRef.rebalanceFactorPortfolio(),
+    isHalted: () => haltSwitch.halted,
+    isTradingDay: () => calendar.isTradingDaySync('KR'),
+    intervalMs: REBALANCE_INTERVAL_MS,
+    logger: { log: (e) => logger.log({ type: 'REBALANCE_ERROR', message: String(e), at: Date.now() }) },
+  });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -276,18 +290,27 @@ export function bootstrap() {
     factorPortfolio,
     getPrices: (s) => client.getPrices(s),
     factorPortfolioTopN: 10,
+    rebalanceScheduler,
   });
+  systemRef = system;
+
+  if (AUTO_REBALANCE) {
+    rebalanceScheduler.start();
+    logger.log({ type: 'REBALANCE_SCHEDULER_ARMED', message: `[rebalance] auto-scheduler armed, interval=${REBALANCE_INTERVAL_MS}ms`, at: Date.now() });
+    console.log(`[rebalance] auto-scheduler armed, interval=${REBALANCE_INTERVAL_MS}ms`);
+  }
+
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
   return {
     client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
-    deployer, watchList,
+    deployer, watchList, rebalanceScheduler,
   };
 }
 
 export async function main(): Promise<void> {
-  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies, deployer } = bootstrap();
+  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies, deployer, rebalanceScheduler } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
   if (system.haltStatus().halted) {
     console.warn(`⚠️ kill switch is SET (${system.haltStatus().reason}); brokers will refuse orders until /api/resume`);
@@ -309,6 +332,7 @@ export async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(saveTimer);
+    rebalanceScheduler.stop();
     saveState();
     worker.stop();
     await server.close().catch(() => { /* already closing */ });
