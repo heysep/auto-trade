@@ -51,8 +51,8 @@ const CLOSES_BY_SYMBOL: Record<string, number[]> = {
 
 function makeGetCandles(
   closes: Record<string, number[]>,
-): (symbol: string, interval: '1d') => Promise<TossCandle[]> {
-  return async (symbol: string, _interval: '1d') => {
+): (symbol: string, interval: '1d', count: number) => Promise<TossCandle[]> {
+  return async (symbol: string, _interval: '1d', _count: number) => {
     const data = closes[symbol];
     if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
     return makeCandles(data);
@@ -105,6 +105,61 @@ describe('FactorRankingService', () => {
       // Lower rank number = better; rising stock must beat the volatile faller
       expect(risingEntry!.rank).toBeLessThan(fallingEntry!.rank);
     });
+
+    it('passes the default candleCount (280) to getCandles', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const capturedCounts: number[] = [];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        count: number,
+      ): Promise<TossCandle[]> => {
+        capturedCounts.push(count);
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+      });
+
+      await service.rank();
+
+      // Every symbol must receive count=280 (the default candleCount)
+      expect(capturedCounts).toHaveLength(UNIVERSE.length);
+      expect(capturedCounts.every((c) => c === 280)).toBe(true);
+    });
+
+    it('passes a custom candleCount when configured', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const capturedCounts: number[] = [];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        count: number,
+      ): Promise<TossCandle[]> => {
+        capturedCounts.push(count);
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        candleCount: 350,
+      });
+
+      await service.rank();
+
+      expect(capturedCounts.every((c) => c === 350)).toBe(true);
+    });
   });
 
   describe('caching + limit', () => {
@@ -115,6 +170,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         callCount++;
         const data = CLOSES_BY_SYMBOL[symbol];
@@ -162,6 +218,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         callCount++;
         const data = CLOSES_BY_SYMBOL[symbol];
@@ -201,6 +258,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         if (symbol === ERR_SYMBOL) throw new Error('upstream error');
         const data = CLOSES_BY_SYMBOL[symbol];
@@ -238,6 +296,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         if (symbol === 'EMPTY') return [];
         const data = CLOSES_BY_SYMBOL[symbol];
@@ -266,6 +325,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         callCount++;
         const data = CLOSES_BY_SYMBOL[symbol];
@@ -298,6 +358,7 @@ describe('FactorRankingService', () => {
       const getCandles = async (
         symbol: string,
         _interval: '1d',
+        _count: number,
       ): Promise<TossCandle[]> => {
         callCount++;
         const data = CLOSES_BY_SYMBOL[symbol];

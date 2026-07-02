@@ -163,13 +163,12 @@ export function bootstrap() {
   // Symbol search uses a static KRX list — Toss /stocks needs explicit symbols (no list-all endpoint).
   const symbolCatalog = new SymbolCatalog(async () => KRX_SYMBOLS);
 
-  // Factor ranking: assembles full KRX universe, fetches daily candles sequentially,
-  // runs AQR FactorModel. Candle count capped at the API default (200) — not enough
-  // for DEFAULT_PERIODS (252-bar lookbacks). Until DART fundamentals land, price-only
-  // factors (momentum 200→252 bars short) are the best available approximation.
+  // Factor ranking: assembles full KRX universe, fetches 280 daily candles per symbol
+  // sequentially (respects rate limits), runs AQR FactorModel. 280 bars > 252 needed
+  // for 12-month momentum + 252-bar vol/MDD, with margin for non-trading days.
   const factorRanking = new FactorRankingService({
     universe: () => KRX_SYMBOLS,
-    getCandles: (s) => client.getCandles(s, '1d'),
+    getCandles: (s, i, n) => client.getCandles(s, i, n),
     model: new FactorModel(),
   });
 

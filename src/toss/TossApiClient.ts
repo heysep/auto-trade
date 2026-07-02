@@ -15,8 +15,20 @@ import type {
 
 const PREFIX = '/api/v1';
 
+const DEFAULT_MAX_RETRIES = 4;
+const BACKOFF_BASE_MS = 400;
+
 export class TossApiClient {
-  constructor(private readonly tokens = new TokenManager()) {}
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly maxRetries: number;
+
+  constructor(
+    private readonly tokens = new TokenManager(),
+    opts: { sleep?: (ms: number) => Promise<void>; maxRetries?: number } = {},
+  ) {
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+  }
 
   private async request<T>(
     path: string,
@@ -31,16 +43,35 @@ export class TossApiClient {
     };
     if (account) headers['X-Tossinvest-Account'] = account;
 
-    const res = await fetch(`${config.toss.baseUrl}${path}`, {
-      ...init,
-      headers,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),   // never hang forever
-    });
-    // 429 carries rate-limit context so callers/throttles can back off (spec §6).
-    if (res.status === 429) throw RateLimitError.from(res);
-    if (!res.ok) throw new Error(`Toss API ${init.method ?? 'GET'} ${path} -> ${res.status}`);
-    // Tolerate 204/empty (e.g. cancel) and unwrap the `{ result }` envelope.
-    return unwrap(await parseBody(res)) as T;
+    let lastRateLimitError: RateLimitError | undefined;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0) {
+        // Back off before retrying: use Retry-After if provided, else exponential backoff.
+        const delayMs = lastRateLimitError?.retryAfterSec !== undefined
+          ? lastRateLimitError.retryAfterSec * 1000
+          : BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
+        await this.sleep(delayMs);
+      }
+
+      const res = await fetch(`${config.toss.baseUrl}${path}`, {
+        ...init,
+        headers,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),   // never hang forever
+      });
+
+      if (res.status === 429) {
+        // 429 carries rate-limit context so callers/throttles can back off (spec §6).
+        lastRateLimitError = RateLimitError.from(res);
+        continue;
+      }
+      if (!res.ok) throw new Error(`Toss API ${init.method ?? 'GET'} ${path} -> ${res.status}`);
+      // Tolerate 204/empty (e.g. cancel) and unwrap the `{ result }` envelope.
+      return unwrap(await parseBody(res)) as T;
+    }
+
+    // Exhausted all retries — rethrow the last rate-limit error.
+    throw lastRateLimitError!;
   }
 
   // --- reads ---

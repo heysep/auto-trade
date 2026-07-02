@@ -9,14 +9,14 @@ export interface FactorRankingDeps {
   /** Supplier of the universe; called on every cache miss. May be sync or async. */
   universe: () => TossStock[] | Promise<TossStock[]>;
   /** Fetch daily candles for one symbol. Called sequentially, NOT concurrently. */
-  getCandles: (symbol: string, interval: '1d') => Promise<TossCandle[]>;
+  getCandles: (symbol: string, interval: '1d', count: number) => Promise<TossCandle[]>;
   /** Pre-constructed FactorModel (carries its own weights + periods). */
   model: FactorModel;
   /** Injectable clock — defaults to Date.now for production. */
   now?: () => number;
   /** Cache TTL in milliseconds. Default: 15 minutes. */
   ttlMs?: number;
-  /** Stored for documentation; the `getCandles` signature cannot accept it. */
+  /** Number of daily candles to fetch per symbol. Default: 280 (needs >252 for 12-month momentum). */
   candleCount?: number;
 }
 
@@ -37,11 +37,10 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 export class FactorRankingService {
   private readonly universe: () => TossStock[] | Promise<TossStock[]>;
-  private readonly getCandles: (symbol: string, interval: '1d') => Promise<TossCandle[]>;
+  private readonly getCandles: (symbol: string, interval: '1d', count: number) => Promise<TossCandle[]>;
   private readonly model: FactorModel;
   private readonly now: () => number;
   private readonly ttlMs: number;
-  // candleCount stored but not forwarded (getCandles signature has no count param)
   private readonly candleCount: number;
 
   private cache: RankingResult | undefined;
@@ -52,7 +51,7 @@ export class FactorRankingService {
     this.model = deps.model;
     this.now = deps.now ?? Date.now;
     this.ttlMs = deps.ttlMs ?? DEFAULT_TTL_MS;
-    this.candleCount = deps.candleCount ?? 200;
+    this.candleCount = deps.candleCount ?? 280;
   }
 
   /**
@@ -82,7 +81,7 @@ export class FactorRankingService {
     // Sequential — one symbol at a time to respect rate limits
     for (const stock of stocks) {
       try {
-        const candles = await this.getCandles(stock.symbol, '1d');
+        const candles = await this.getCandles(stock.symbol, '1d', this.candleCount);
         if (candles.length === 0) {
           skipped++;
           continue;

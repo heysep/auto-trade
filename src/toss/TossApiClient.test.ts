@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { TossApiClient } from './TossApiClient.js';
+import { RateLimitError } from './http.js';
 import type { TossStock, TossCandle, TossCandlePage } from './types.js';
 
 // Stub TokenManager so no real HTTP is needed.
@@ -192,6 +193,7 @@ describe('TossApiClient.getCandles', () => {
   });
 
   it('deduplicates bars whose timestamp appears on both sides of a page boundary', async () => {
+
     const client = new TossApiClient(fakeTokens);
     const DAY = 86_400_000;
     const BASE = Date.UTC(2025, 0, 1);
@@ -223,5 +225,122 @@ describe('TossApiClient.getCandles', () => {
     // No duplicate timestamps in the result.
     const tSet = new Set(result.map((c) => c.timestamp));
     expect(tSet.size).toBe(259);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 retry-with-backoff tests (uses real fetch path, mocks globalThis.fetch)
+// ---------------------------------------------------------------------------
+
+/** Build a minimal Response-like object for vi.stubGlobal. */
+function makeResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
+  const headersObj = new Headers(headers);
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: headersObj,
+    text: async () => (body === undefined ? '' : JSON.stringify(body)),
+  } as unknown as Response;
+}
+
+/** Candles page fixture for a successful response (wrapped in { result }). */
+const successPage: TossCandlePage = {
+  candles: [
+    {
+      timestamp: '2026-01-02T09:00:00+09:00',
+      openPrice: '70000',
+      highPrice: '71000',
+      lowPrice: '69500',
+      closePrice: '70500',
+    },
+  ],
+  nextBefore: null,
+};
+
+describe('TossApiClient 429 retry', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('retries once on 429 and succeeds on the next attempt', async () => {
+    const instantSleep = vi.fn().mockResolvedValue(undefined);
+    const client = new TossApiClient(fakeTokens, { sleep: instantSleep, maxRetries: 4 });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      if (callCount === 1) {
+        return makeResponse(429, undefined, { 'retry-after': '1' });
+      }
+      return makeResponse(200, { result: successPage });
+    });
+
+    const result = await client.getCandles('005930', '1d', 1);
+
+    expect(callCount).toBe(2);
+    expect(instantSleep).toHaveBeenCalledTimes(1);
+    // Delay should be retryAfterSec (1) * 1000 = 1000 ms
+    expect(instantSleep).toHaveBeenCalledWith(1000);
+    expect(result).toHaveLength(1);
+  });
+
+  it('uses exponential backoff when no Retry-After header is present', async () => {
+    const instantSleep = vi.fn().mockResolvedValue(undefined);
+    const client = new TossApiClient(fakeTokens, { sleep: instantSleep, maxRetries: 4 });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      if (callCount <= 2) {
+        // No Retry-After header — exponential backoff applies
+        return makeResponse(429, undefined);
+      }
+      return makeResponse(200, { result: successPage });
+    });
+
+    const result = await client.getCandles('005930', '1d', 1);
+
+    expect(callCount).toBe(3);
+    expect(instantSleep).toHaveBeenCalledTimes(2);
+    // attempt=1: base * 2^0 = 400ms; attempt=2: base * 2^1 = 800ms
+    expect(instantSleep).toHaveBeenNthCalledWith(1, 400);
+    expect(instantSleep).toHaveBeenNthCalledWith(2, 800);
+    expect(result).toHaveLength(1);
+  });
+
+  it('throws RateLimitError after exhausting all retries', async () => {
+    const instantSleep = vi.fn().mockResolvedValue(undefined);
+    const maxRetries = 3;
+    const client = new TossApiClient(fakeTokens, { sleep: instantSleep, maxRetries });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      return makeResponse(429, undefined, { 'retry-after': '2' });
+    });
+
+    await expect(client.getCandles('005930', '1d', 1)).rejects.toBeInstanceOf(RateLimitError);
+    // 1 original + maxRetries retries = maxRetries+1 total calls
+    expect(callCount).toBe(maxRetries + 1);
+    expect(instantSleep).toHaveBeenCalledTimes(maxRetries);
+  });
+
+  it('does NOT retry on non-429 errors (exactly one fetch call)', async () => {
+    const instantSleep = vi.fn().mockResolvedValue(undefined);
+    const client = new TossApiClient(fakeTokens, { sleep: instantSleep, maxRetries: 4 });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      return makeResponse(503, undefined);
+    });
+
+    await expect(client.getCandles('005930', '1d', 1)).rejects.toThrow('503');
+    expect(callCount).toBe(1);
+    expect(instantSleep).not.toHaveBeenCalled();
   });
 });
