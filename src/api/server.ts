@@ -563,8 +563,14 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <div class="rb-header">
         <button id="btn-rebalance">포트폴리오 리밸런싱 실행</button>
         <span style="font-size:10px;color:var(--mu)">(PAPER)</span>
+        <label style="display:flex;align-items:center;gap:5px;margin-left:10px;cursor:pointer;user-select:none">
+          <input type="checkbox" id="arb-toggle" style="cursor:pointer">
+          <span style="font-size:11px;color:var(--tx)">자동 리밸런싱</span>
+        </label>
+        <span id="arb-caption" style="font-size:10px;color:var(--mu);margin-left:4px"></span>
       </div>
       <div class="rbcaveat">페이퍼 전용 · 상위10 등가중 · 실행 시 시장가 주문</div>
+      <div class="rbcaveat" style="margin-top:2px">페이퍼 자동매매 · 거래일/정지 게이트 적용</div>
       <div id="rb-status" style="display:none;padding:8px 10px;font-size:11px;color:#ef5350"></div>
       <div id="rb-plan" style="display:none">
         <div id="rb-summary" class="rb-summary"></div>
@@ -660,6 +666,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     this.classList.add('active');
     var pane = document.getElementById('tab-' + tab);
     if (pane) pane.style.display = '';
+    if (tab === 'portfolio') { loadAutoRebalanceStatus(); }
   });
 });
 
@@ -1312,6 +1319,90 @@ function renderRebalancePlan(plan) {
   } catch (rbErr) {
     console.error('[rebalance] render error:', rbErr);
   }
+}
+
+/* ---- Auto-rebalance toggle ---- */
+function applyAutoRebalanceStatus(data) {
+  try {
+    var toggle = document.getElementById('arb-toggle');
+    var caption = document.getElementById('arb-caption');
+    if (!toggle || !caption) return;
+    toggle.disabled = false;
+    toggle.checked = !!data.enabled;
+    var parts = [];
+    if (data.intervalMs != null) {
+      var hrs = Math.round(Number(data.intervalMs) / 3600000);
+      parts.push('간격 ' + esc(String(hrs)) + 'h');
+    }
+    if (data.lastRun != null) {
+      var d = new Date(data.lastRun);
+      var ds = d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+      var note = data.lastSkipped ? 'skip' : 'ok';
+      parts.push('최근 ' + esc(ds) + ' (' + esc(note) + ')');
+    }
+    caption.textContent = parts.join(' · ');
+  } catch (e) {
+    console.error('[arb] applyAutoRebalanceStatus error:', e);
+  }
+}
+
+function loadAutoRebalanceStatus() {
+  try {
+    var toggle = document.getElementById('arb-toggle');
+    var caption = document.getElementById('arb-caption');
+    if (!toggle || !caption) return;
+    var tok = localStorage.getItem('apiToken') || '';
+    fetch('/api/factors/autorebalance', { headers: { 'x-api-token': tok } })
+      .then(function(r) {
+        if (r.status === 503) {
+          if (toggle) { toggle.disabled = true; toggle.checked = false; }
+          if (caption) caption.textContent = '스케줄러 비활성';
+          return null;
+        }
+        return r.json();
+      })
+      .then(function(data) {
+        if (data) applyAutoRebalanceStatus(data);
+      })
+      .catch(function(e) {
+        console.error('[arb] loadAutoRebalanceStatus error:', e);
+        if (caption) caption.textContent = '상태 조회 실패';
+      });
+  } catch (e) {
+    console.error('[arb] loadAutoRebalanceStatus outer error:', e);
+  }
+}
+
+var arbToggle = document.getElementById('arb-toggle');
+if (arbToggle) {
+  arbToggle.addEventListener('change', function() {
+    try {
+      var toggle = document.getElementById('arb-toggle');
+      var caption = document.getElementById('arb-caption');
+      if (!toggle) return;
+      var enabled = toggle.checked;
+      var tok = localStorage.getItem('apiToken') || '';
+      fetch('/api/factors/autorebalance', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-token': tok },
+        body: JSON.stringify({ enabled: enabled }),
+      }).then(function(r) {
+        if (r.status === 503) {
+          if (toggle) { toggle.disabled = true; toggle.checked = false; }
+          if (caption) caption.textContent = '스케줄러 비활성';
+          return null;
+        }
+        return r.json();
+      }).then(function(data) {
+        if (data) applyAutoRebalanceStatus(data);
+      }).catch(function(e) {
+        console.error('[arb] toggle change error:', e);
+        if (caption) caption.textContent = '오류';
+      });
+    } catch (e) {
+      console.error('[arb] toggle outer error:', e);
+    }
+  });
 }
 
 var rbBtn = document.getElementById('btn-rebalance');

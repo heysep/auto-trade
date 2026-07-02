@@ -120,6 +120,7 @@ describe('HTTP API', () => {
     expect(res.body).toContain('팩터 랭킹');
     expect(res.body).toContain('팩터 백테스트');
     expect(res.body).toContain('리밸런싱');
+    expect(res.body).toContain('자동 리밸런싱');
   });
 
   it('404s unknown strategy/quote; 400s a bad mode', async () => {

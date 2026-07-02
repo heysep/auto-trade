@@ -197,7 +197,8 @@ export function bootstrap() {
   let dartGetStocks: ((s: string[]) => Promise<import('./toss/types.js').TossStock[]>) | undefined;
   if (config.dart.apiKey !== '') {
     const dartClient = new DartApiClient({ apiKey: config.dart.apiKey });
-    dartFundamentals = new FundamentalsService({ dart: dartClient, year: 2024 });
+    const fundamentalsYear = new Date().getFullYear() - 1;
+    dartFundamentals = new FundamentalsService({ dart: dartClient, year: fundamentalsYear });
     dartGetStocks = (s) => client.getStocks(s);
   }
 
