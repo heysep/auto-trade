@@ -6,7 +6,7 @@ import type { HaltSwitch } from './HaltSwitch.js';
 import type { Position, Order, Quote, TradingMode, StrategyStatus } from '../domain/types.js';
 import { evaluatePromotion, type PromotionInput } from '../strategy/PromotionGate.js';
 import type { SymbolCatalog } from '../market/SymbolCatalog.js';
-import type { TossStock, TossCandle, ChartCandle } from '../toss/types.js';
+import type { TossStock, TossCandle, ChartCandle, TossPriceItem } from '../toss/types.js';
 import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
 import { BacktestEngine } from '../backtest/BacktestEngine.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
@@ -14,7 +14,6 @@ import type { StrategyDeployer } from './StrategyDeployer.js';
 import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
 import type { FactorPortfolioManager, RebalancePlan } from '../factor/FactorPortfolioManager.js';
-import type { TossPriceItem } from '../toss/types.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
