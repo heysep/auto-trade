@@ -3,7 +3,15 @@
 
 /**
  * Clamp each value to the array's [lowerPct, upperPct] percentile bounds.
- * Percentile index = Math.floor((n-1) * pct).
+ *
+ * Index formulas (M1 fix — correct small-n behaviour):
+ *   lower index = Math.max(0, Math.floor((n-1) * lowerPct))   [floor, clamped ≥ 0]
+ *   upper index = Math.min(n-1, Math.ceil((n-1) * upperPct))  [ceil,  clamped ≤ n-1]
+ *
+ * Using ceil for the upper index means that for small cross-sections (n ≤ ~100 at
+ * pct=0.99) the upper bound stays at the observed maximum, so lo ≠ hi and z-scores
+ * remain non-degenerate.  Actual clamping kicks in for n ≥ 101 with pct=0.99.
+ *
  * Returns a copy. Empty / single-element arrays are returned as copies unchanged.
  */
 export function winsorize(
@@ -15,9 +23,9 @@ export function winsorize(
   if (n <= 1) return [...xs];
 
   const sorted = [...xs].sort((a, b) => a - b);
-  // Indices are within [0, n-1] because pct ∈ [0,1) and n ≥ 2, so ! is provably safe.
-  const lo = sorted[Math.floor((n - 1) * lowerPct)]!;
-  const hi = sorted[Math.floor((n - 1) * upperPct)]!;
+  // Both indices are within [0, n-1] by construction — ! is provably safe.
+  const lo = sorted[Math.max(0, Math.floor((n - 1) * lowerPct))]!;
+  const hi = sorted[Math.min(n - 1, Math.ceil((n - 1) * upperPct))]!;
 
   return xs.map((x) => Math.min(Math.max(x, lo), hi));
 }

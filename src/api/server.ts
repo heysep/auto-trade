@@ -185,17 +185,26 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
       if (!Number.isInteger(n) || n <= 0) {
         return reply.code(400).send({ error: 'topN must be a positive integer' });
       }
+      if (n > 50) {
+        return reply.code(400).send({ error: 'topN must be ≤ 50' });
+      }
     }
     if (body.rebalanceEvery !== undefined) {
       const n = Number(body.rebalanceEvery);
       if (!Number.isInteger(n) || n <= 0) {
         return reply.code(400).send({ error: 'rebalanceEvery must be a positive integer' });
       }
+      if (n > 250) {
+        return reply.code(400).send({ error: 'rebalanceEvery must be ≤ 250' });
+      }
     }
     if (body.startCapital !== undefined) {
       const n = Number(body.startCapital);
       if (!Number.isFinite(n) || n <= 0) {
         return reply.code(400).send({ error: 'startCapital must be a positive number' });
+      }
+      if (n > 1e12) {
+        return reply.code(400).send({ error: 'startCapital must be ≤ 1e12' });
       }
     }
 

@@ -149,7 +149,10 @@ export class FactorBacktest {
         .filter((s) => s.rank <= this.cfg.topN)
         .map((s) => s.symbol);
 
-      if (holdings.length >= 1) {
+      // M2 guard: require ≥2 scorable symbols so the model produces meaningful
+      // cross-sectional z-scores.  A single-symbol scored universe returns
+      // composite=0 for every entry — not actionable signal.
+      if (scored.length >= 2) {
         keptRebalances.push({ date: d, holdings });
       }
     }

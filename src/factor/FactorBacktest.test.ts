@@ -1,9 +1,10 @@
 // TDD tests for FactorBacktest (AQR §5.1 long-only top-N rebalancing backtest).
 //
 // Design:
-//   - All non-degenerate universes use ≥3 symbols.
-//     Reason: winsorize(n=2) collapses lo=hi=sorted[0], making all z-scores 0.
-//     With ≥3 symbols, winsorize clamps to real (lo,hi) range and zscore is meaningful.
+//   - Non-degenerate suites generally use ≥3 symbols for observable factor spread.
+//     After M1 (winsorize fix), n=2 no longer collapses lo=hi, so z-scores are
+//     meaningful for 2 symbols too.  The minimum-2-scorable guard (M2) is the
+//     reason rebalance dates need scored.length ≥ 2, not a winsorize concern.
 //   - CONSTANT-PERCENTAGE growth prices (geometric) → daily returns are identical,
 //     realizedVol = 0 for each symbol independently. This matches the FactorModel test
 //     design and avoids vol noise overwhelming the ranking.
@@ -329,6 +330,76 @@ describe('FactorBacktest — topN=2: two holdings per rebalance', () => {
     for (const rb of result.rebalances) {
       expect(rb.holdings).not.toContain('B');
     }
+  });
+});
+
+// ── Suite 7M2: Min-2-scorable guard (M2 fix) ─────────────────────────────────
+//
+// Before M2: `if (holdings.length >= 1)` kept any date where ≥1 degenerate holding
+// was produced, even when only 1 symbol had enough history.  Such single-symbol
+// rebalances are concentrated (model.score returns composite=0 for all symbols when
+// scorable.length < 2) and should be skipped.
+//
+// After M2: guard changed to `if (scored.length >= 2)`.
+//
+// Universe design:
+//   EARLY: full series D[0..9] (10 prices).  Scorable from d4 onwards (needs n≥5).
+//   LATE:  series starts at D[4]  → at d4: 1 price, at d6: 3 prices, at d8: 5 prices.
+//
+// Candidate dates (rebalanceEvery=2, SMALL periods, n≥5 required):
+//   d0 (D[0]): EARLY 1 price → 0 scorable → skip (both old and new)
+//   d2 (D[2]): EARLY 3 prices → 0 scorable → skip (both old and new)
+//   d4 (D[4]): EARLY 5 prices (scorable), LATE 1 price (not scorable) → 1 scorable
+//              OLD (holdings.length≥1): KEEP (degenerate composite=0 holding)
+//              NEW (scored.length≥2):   SKIP
+//   d6 (D[6]): EARLY 7 prices (scorable), LATE 3 prices (not scorable) → 1 scorable
+//              OLD: KEEP. NEW: SKIP.
+//   d8 (D[8]): EARLY 9 prices (scorable), LATE 5 prices (scorable) → 2 scorable
+//              BOTH OLD and NEW: KEEP.
+//
+// Expected with M2 fix: rebalanceCount=1 (only d8 survives the guard).
+
+describe('FactorBacktest — M2: dates with only 1 scorable symbol are skipped', () => {
+  // EARLY: rising +5%/day from D[0] (10 prices total)
+  const earlySymbol: BacktestSymbol = {
+    symbol: 'EARLY',
+    sector: 'Tech',
+    series: D.map((date, i) => ({ date, close: 100 * Math.pow(1.05, i) })),
+  };
+
+  // LATE: flat +3%/day but only has prices from D[4] onward (6 prices)
+  const lateSymbol: BacktestSymbol = {
+    symbol: 'LATE',
+    sector: 'Tech',
+    series: D.slice(4).map((date, i) => ({ date, close: 100 * Math.pow(1.03, i) })),
+  };
+
+  const model = new FactorModel(DEFAULT_WEIGHTS, SMALL);
+  const backtest = new FactorBacktest(model, CFG); // topN=1, rebalanceEvery=2
+  const result = backtest.run([earlySymbol, lateSymbol]);
+
+  it('rebalanceCount is 1 (only d8 has ≥2 scorable symbols)', () => {
+    // d4 and d6 each have only 1 scorable symbol → skipped by M2 guard.
+    // d8 has EARLY (9 prices) and LATE (5 prices) → both scorable → kept.
+    expect(result.metrics.rebalanceCount).toBe(1);
+  });
+
+  it('the single kept rebalance date is d8 (the date ≥2 symbols become scorable)', () => {
+    expect(result.rebalances).toHaveLength(1);
+    expect(result.rebalances[0]!.date).toBe(D[8]);
+  });
+
+  it('holdings at d8 contain exactly topN=1 symbol chosen from the 2 scorable ones', () => {
+    expect(result.rebalances[0]!.holdings).toHaveLength(1);
+    const held = result.rebalances[0]!.holdings[0];
+    expect(['EARLY', 'LATE']).toContain(held);
+  });
+
+  it('equityCurve has exactly 1 point (the d8 rebalance)', () => {
+    // Only one rebalance → one equity-curve point; no forward step originates from it.
+    expect(result.equityCurve).toHaveLength(1);
+    expect(result.equityCurve[0]!.date).toBe(D[8]);
+    expect(result.equityCurve[0]!.nav).toBe(CFG.startCapital);
   });
 });
 

@@ -543,6 +543,54 @@ describe('HTTP API', () => {
       expect(res.statusCode).toBe(400);
       expect(res.json<{ error: string }>().error).toMatch(/startCapital/);
     });
+
+    // ── M3: upper-cap rejections ──────────────────────────────────────────────
+    //
+    // topN > 50, rebalanceEvery > 250, startCapital > 1e12 must all → 400.
+    // These guard against denial-of-service via absurdly large parameters.
+
+    it('returns 400 for topN: 1000 (exceeds cap of 50)', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { topN: 1000 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/topN/);
+    });
+
+    it('returns 400 for rebalanceEvery: 100000 (exceeds cap of 250)', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { rebalanceEvery: 100000 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/rebalanceEvery/);
+    });
+
+    it('returns 400 for startCapital: 2e12 (exceeds cap of 1e12)', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { startCapital: 2e12 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/startCapital/);
+    });
+
+    it('returns 200 for a normal valid request (topN:2, rebalanceEvery:3)', async () => {
+      const { app } = btFactorHarness();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/factors/backtest',
+        payload: { topN: 2, rebalanceEvery: 3 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 
