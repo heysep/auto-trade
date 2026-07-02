@@ -11,6 +11,7 @@ import { buildStrategy, type StrategySpec } from '../strategy/strategySpec.js';
 import { BacktestEngine } from '../backtest/BacktestEngine.js';
 import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
 import type { StrategyDeployer } from './StrategyDeployer.js';
+import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -43,6 +44,8 @@ export interface TradingSystemDeps {
   getCandles?: (symbol: string, interval: '1m' | '1d') => Promise<TossCandle[]>;
   /** Dynamic strategy deployer. Omitted => deploy() returns 400. */
   deployer?: StrategyDeployer;
+  /** Universe factor ranking service. Omitted => factorRanking() returns 503. */
+  factorRanking?: FactorRankingService;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -156,6 +159,22 @@ export class TradingSystem {
   /** Remove a deployed strategy by id. Returns false if unknown. */
   undeploy(id: number): boolean {
     return this.deps.deployer?.undeploy(id) ?? false;
+  }
+
+  /**
+   * Return the factor ranking for the configured universe.
+   * Returns a 503 error shape when no FactorRankingService is wired.
+   * `limit` slices the top-N entries without triggering a refetch within TTL.
+   */
+  async factorRanking(limit?: number): Promise<RankingResult | { error: string; code: number }> {
+    const svc = this.deps.factorRanking;
+    if (svc === undefined) {
+      return { error: 'factor ranking unavailable', code: 503 };
+    }
+    if (limit !== undefined) {
+      return svc.rank(limit);
+    }
+    return svc.rank();
   }
 
   async backtest(input: {

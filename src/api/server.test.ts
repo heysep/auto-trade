@@ -11,11 +11,14 @@ import { SymbolCatalog } from '../market/SymbolCatalog.js';
 import { StrategyEngine } from '../strategy/StrategyEngine.js';
 import { WatchList } from '../market/WatchList.js';
 import { StrategyDeployer } from '../app/StrategyDeployer.js';
+import { FactorRankingService } from '../factor/FactorRankingService.js';
+import { FactorModel } from '../factor/FactorModel.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote } from '../domain/types.js';
 import type { TossCandle, TossStock, ChartCandle } from '../toss/types.js';
 import type { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
+import type { RankingResult } from '../factor/FactorRankingService.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -29,6 +32,7 @@ function harness(opts: {
   getCandles?: (symbol: string, interval: '1m' | '1d') => Promise<TossCandle[]>;
   /** When true, harness builds a StrategyEngine + WatchList + StrategyDeployer sharing the same registry as the system. */
   withDeployer?: boolean;
+  factorRanking?: FactorRankingService;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -61,6 +65,7 @@ function harness(opts: {
     ...(opts.symbolCatalog ? { symbolCatalog: opts.symbolCatalog } : {}),
     ...(opts.getCandles ? { getCandles: opts.getCandles } : {}),
     ...(deployer ? { deployer } : {}),
+    ...(opts.factorRanking !== undefined ? { factorRanking: opts.factorRanking } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer };
 }
@@ -363,6 +368,64 @@ describe('HTTP API', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json<{ error: string }>().error).toMatch(/spec/);
+    });
+  });
+
+  describe('GET /api/factors/ranking', () => {
+    const SMALL_PERIODS = { momSkip: 1, momLong: 3, momMid: 2, volWindow: 3, mddWindow: 3 };
+    const UNIVERSE: TossStock[] = [
+      { symbol: 'A', name: 'Alpha', market: 'KR' },
+      { symbol: 'B', name: 'Beta', market: 'KR' },
+    ];
+    // 5 bars: enough for SMALL_PERIODS
+    function makeCandles(closes: number[]): TossCandle[] {
+      return closes.map((close, i) => ({
+        timestamp: new Date(1000 * (i + 1)).toISOString(),
+        openPrice: String(close),
+        highPrice: String(close),
+        lowPrice: String(close),
+        closePrice: String(close),
+      }));
+    }
+    const CANDLES_A = makeCandles([100, 102, 104, 106, 108]);
+    const CANDLES_B = makeCandles([100, 80, 120, 60, 50]);
+
+    function factorHarness() {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const svc = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: async (symbol: string, _interval: '1d') =>
+          symbol === 'A' ? CANDLES_A : CANDLES_B,
+        model,
+      });
+      return harness({ factorRanking: svc });
+    }
+
+    it('returns 200 with a scored ranking when FactorRankingService is wired', async () => {
+      const { app } = factorHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/factors/ranking' });
+      expect(res.statusCode).toBe(200);
+
+      const body = res.json<RankingResult>();
+      expect(body.universeSize).toBe(2);
+      expect(body.scored).toHaveLength(2);
+      expect(body.scored[0]?.rank).toBe(1);
+      expect(body.scored[1]?.rank).toBe(2);
+      expect(typeof body.asOf).toBe('number');
+    });
+
+    it('respects ?limit= and returns only the top N entries', async () => {
+      const { app } = factorHarness();
+      const res = await app.inject({ method: 'GET', url: '/api/factors/ranking?limit=1' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json<RankingResult>().scored).toHaveLength(1);
+    });
+
+    it('returns 503 with error body when FactorRankingService is not wired', async () => {
+      const { app } = harness(); // no factorRanking
+      const res = await app.inject({ method: 'GET', url: '/api/factors/ranking' });
+      expect(res.statusCode).toBe(503);
+      expect(res.json<{ error: string }>().error).toBe('factor ranking unavailable');
     });
   });
 });

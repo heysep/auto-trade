@@ -27,6 +27,8 @@ import { WatchList } from './market/WatchList.js';
 import { SymbolCatalog } from './market/SymbolCatalog.js';
 import { KRX_SYMBOLS } from './market/krxSymbols.js';
 import { buildServer } from './api/server.js';
+import { FactorRankingService } from './factor/FactorRankingService.js';
+import { FactorModel } from './factor/FactorModel.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
@@ -160,6 +162,17 @@ export function bootstrap() {
   const perf = new PerformanceService(repo, tracker, () => STRATEGY_CAPITAL);
   // Symbol search uses a static KRX list — Toss /stocks needs explicit symbols (no list-all endpoint).
   const symbolCatalog = new SymbolCatalog(async () => KRX_SYMBOLS);
+
+  // Factor ranking: assembles full KRX universe, fetches daily candles sequentially,
+  // runs AQR FactorModel. Candle count capped at the API default (200) — not enough
+  // for DEFAULT_PERIODS (252-bar lookbacks). Until DART fundamentals land, price-only
+  // factors (momentum 200→252 bars short) are the best available approximation.
+  const factorRanking = new FactorRankingService({
+    universe: () => KRX_SYMBOLS,
+    getCandles: (s) => client.getCandles(s, '1d'),
+    model: new FactorModel(),
+  });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -167,6 +180,7 @@ export function bootstrap() {
     symbolCatalog,
     getCandles: (s, i) => client.getCandles(s, i),
     deployer,
+    factorRanking,
   });
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 

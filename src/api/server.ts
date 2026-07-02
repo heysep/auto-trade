@@ -176,6 +176,23 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     });
   });
 
+  // --- factor ranking ---
+  app.get('/api/factors/ranking', async (req, reply) => {
+    const q = req.query as { limit?: string };
+    let limit: number | undefined;
+    if (q.limit !== undefined) {
+      const n = Number(q.limit);
+      if (Number.isInteger(n) && n > 0) limit = n;
+    }
+    const result = limit !== undefined
+      ? await system.factorRanking(limit)
+      : await system.factorRanking();
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
   return app;
 }
 
