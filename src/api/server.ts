@@ -232,6 +232,15 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return result;
   });
 
+  // --- factor portfolio rebalance ---
+  app.post('/api/factors/rebalance', async (_req, reply) => {
+    const result = await system.rebalanceFactorPortfolio();
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
   return app;
 }
 
