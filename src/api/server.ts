@@ -373,6 +373,16 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .fbt-rebalances{padding:0 10px 6px}
 .fbt-reb-row{font-size:10px;color:var(--mu);padding:2px 0;border-bottom:1px solid #0d1219}
 .fbt-reb-date{color:#5a9eff;display:inline-block;min-width:82px}
+/* ---- portfolio rebalance ---- */
+.rb-header{padding:8px 10px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+#btn-rebalance{background:#0e2040;color:#5a9eff;border:1px solid #1c3d7a;border-radius:4px;padding:5px 14px;cursor:pointer;font:inherit;font-size:11px;font-weight:600;white-space:nowrap}
+#btn-rebalance:hover:not(:disabled){background:#142a5a}
+#btn-rebalance:disabled{opacity:.35;cursor:not-allowed}
+.rbcaveat{margin:6px 10px;padding:6px 10px;background:#1c1a08;border:1px solid #5a4a10;border-radius:4px;color:#c8a820;font-size:10px;line-height:1.6}
+.rb-summary{padding:6px 10px 2px;font-size:11px;color:var(--tx)}
+.rb-section-hdr{padding:5px 10px 2px;font-size:10px;color:var(--mu);font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+.rb-order-row{font-size:10px;padding:2px 10px;color:var(--mu);border-bottom:1px solid #0d1219}
+.rb-skip-row{font-size:10px;padding:2px 10px;color:#8a6040;border-bottom:1px solid #0d1219}
 </style>
 </head>
 <body>
@@ -479,6 +489,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     <button class="tab-btn" data-tab="logs">로그</button>
     <button class="tab-btn" data-tab="ranking">팩터 랭킹</button>
     <button class="tab-btn" data-tab="fbt">팩터 백테스트</button>
+    <button class="tab-btn" data-tab="portfolio">포트폴리오</button>
   </div>
   <div class="tab-content">
     <div id="tab-positions" class="tab-pane">
@@ -530,6 +541,29 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <div class="fbt-caveat">⚠️ 생존편향: 유니버스가 현재 상장 종목이라 과거 성과가 과대평가됨. MDD는 리밸런싱 경계에서만 샘플링되어 실제보다 작게 나옴. 참고용.</div>
       <div id="fbt-rebalances" class="fbt-rebalances" style="display:none"></div>
       <div id="fbt-caption" class="fbt-caption" style="display:none"></div>
+    </div>
+    <div id="tab-portfolio" class="tab-pane" style="display:none">
+      <div class="rb-header">
+        <button id="btn-rebalance">포트폴리오 리밸런싱 실행</button>
+        <span style="font-size:10px;color:var(--mu)">(PAPER)</span>
+      </div>
+      <div class="rbcaveat">페이퍼 전용 · 상위10 등가중 · 실행 시 시장가 주문</div>
+      <div id="rb-status" style="display:none;padding:8px 10px;font-size:11px;color:#ef5350"></div>
+      <div id="rb-plan" style="display:none">
+        <div id="rb-summary" class="rb-summary"></div>
+        <table>
+          <thead><tr><th>종목</th><th class="num">목표수량</th><th class="num">현재</th><th class="num">&#916;</th><th class="num">가격</th></tr></thead>
+          <tbody id="rb-targets-body"></tbody>
+        </table>
+        <div id="rb-orders-section" style="display:none">
+          <div class="rb-section-hdr">주문 제출</div>
+          <div id="rb-orders-list"></div>
+        </div>
+        <div id="rb-skipped-section" style="display:none">
+          <div class="rb-section-hdr">스킵</div>
+          <div id="rb-skipped-list"></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -1199,6 +1233,121 @@ function runFactorBacktest() {
 var fbtBtn = document.getElementById('btn-fbt-run');
 if (fbtBtn) {
   fbtBtn.addEventListener('click', function() { runFactorBacktest(); });
+}
+
+/* ---- Portfolio Rebalance (button-only; isolated from 3s loop) ---- */
+function renderRebalancePlan(plan) {
+  try {
+    var rbStatusEl = document.getElementById('rb-status');
+    var rbPlanEl = document.getElementById('rb-plan');
+    var rbSummaryEl = document.getElementById('rb-summary');
+    var rbTargetsBody = document.getElementById('rb-targets-body');
+    var rbOrdersSection = document.getElementById('rb-orders-section');
+    var rbOrdersList = document.getElementById('rb-orders-list');
+    var rbSkippedSection = document.getElementById('rb-skipped-section');
+    var rbSkippedList = document.getElementById('rb-skipped-list');
+    if (!plan || !rbPlanEl) return;
+    var targets = Array.isArray(plan.targets) ? plan.targets : [];
+    var sells = Array.isArray(plan.sells) ? plan.sells : [];
+    var orders = Array.isArray(plan.ordersSubmitted) ? plan.ordersSubmitted : [];
+    var skipped = Array.isArray(plan.skipped) ? plan.skipped : [];
+    var rbAsOf = plan.asOf ? new Date(plan.asOf).toLocaleTimeString() : '';
+    var buyCount = 0;
+    for (var rbi = 0; rbi < orders.length; rbi++) { if (orders[rbi].side === 'BUY') buyCount++; }
+    if (rbStatusEl) rbStatusEl.style.display = 'none';
+    if (rbSummaryEl) rbSummaryEl.textContent = '매수 ' + String(buyCount) + '건 \xb7 매도 ' + String(sells.length) + '건 \xb7 스킵 ' + String(skipped.length) + '건' + (rbAsOf ? ' \xb7 ' + rbAsOf : '');
+    if (rbTargetsBody) {
+      rbTargetsBody.innerHTML = targets.slice(0, 15).map(function(t) {
+        var delta = Number(t.deltaQty);
+        var deltaCls = delta > 0 ? 'num pos' : delta < 0 ? 'num neg' : 'num';
+        var deltaStr = delta > 0 ? '+' + String(delta) : String(delta);
+        return '<tr>' +
+          '<td>' + esc(t.symbol || '') + '</td>' +
+          '<td class="num">' + esc(String(t.targetQty != null ? t.targetQty : '')) + '</td>' +
+          '<td class="num">' + esc(String(t.currentQty != null ? t.currentQty : '')) + '</td>' +
+          '<td class="' + esc(deltaCls) + '">' + esc(deltaStr) + '</td>' +
+          '<td class="num">' + esc(t.price != null ? Number(t.price).toLocaleString() : '') + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+    if (rbOrdersSection && rbOrdersList) {
+      if (orders.length) {
+        rbOrdersList.innerHTML = orders.slice(0, 20).map(function(o) {
+          var oclr = o.side === 'BUY' ? 'color:#26a69a' : 'color:#ef5350';
+          return '<div class="rb-order-row"><span style="' + oclr + '">' + esc(o.side || '') + '</span> ' + esc(o.symbol || '') + ' ' + esc(String(o.qty != null ? o.qty : '')) + '</div>';
+        }).join('');
+        rbOrdersSection.style.display = '';
+      } else {
+        rbOrdersSection.style.display = 'none';
+      }
+    }
+    if (rbSkippedSection && rbSkippedList) {
+      if (skipped.length) {
+        rbSkippedList.innerHTML = skipped.slice(0, 10).map(function(sk) {
+          return '<div class="rb-skip-row">' + esc(sk.symbol || '') + ': ' + esc(sk.reason || '') + '</div>';
+        }).join('');
+        rbSkippedSection.style.display = '';
+      } else {
+        rbSkippedSection.style.display = 'none';
+      }
+    }
+    rbPlanEl.style.display = '';
+  } catch (rbErr) {
+    console.error('[rebalance] render error:', rbErr);
+  }
+}
+
+var rbBtn = document.getElementById('btn-rebalance');
+if (rbBtn) {
+  rbBtn.addEventListener('click', function() {
+    var rbB = document.getElementById('btn-rebalance');
+    var rbS = document.getElementById('rb-status');
+    var rbP = document.getElementById('rb-plan');
+    if (rbB) { rbB.disabled = true; rbB.textContent = '리밸런싱 실행 중… (최대 30초)'; }
+    if (rbS) rbS.style.display = 'none';
+    if (rbP) rbP.style.display = 'none';
+    var tok = localStorage.getItem('apiToken') || '';
+    fetch('/api/factors/rebalance', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-token': tok },
+    }).then(function(r) {
+      if (r.status === 409) {
+        return r.json().then(function() {
+          var s = document.getElementById('rb-status');
+          var b = document.getElementById('btn-rebalance');
+          if (s) { s.textContent = '거래 정지 상태 — 리밸런싱 불가'; s.style.display = ''; }
+          if (b) { b.disabled = false; b.textContent = '포트폴리오 리밸런싱 실행'; }
+        });
+      }
+      if (r.status === 503) {
+        return r.json().then(function() {
+          var s = document.getElementById('rb-status');
+          var b = document.getElementById('btn-rebalance');
+          if (s) { s.textContent = '포트폴리오 배포 비활성'; s.style.display = ''; }
+          if (b) { b.disabled = false; b.textContent = '포트폴리오 리밸런싱 실행'; }
+        });
+      }
+      if (!r.ok) {
+        return r.json().then(function(d) {
+          var s = document.getElementById('rb-status');
+          var b = document.getElementById('btn-rebalance');
+          if (s) { s.textContent = d.error || '오류'; s.style.display = ''; }
+          if (b) { b.disabled = false; b.textContent = '포트폴리오 리밸런싱 실행'; }
+        });
+      }
+      return r.json().then(function(plan) {
+        var b = document.getElementById('btn-rebalance');
+        if (b) { b.disabled = false; b.textContent = '포트폴리오 리밸런싱 실행'; }
+        renderRebalancePlan(plan);
+        refreshPositions();
+      });
+    }).catch(function() {
+      var b = document.getElementById('btn-rebalance');
+      var s = document.getElementById('rb-status');
+      if (b) { b.disabled = false; b.textContent = '포트폴리오 리밸런싱 실행'; }
+      if (s) { s.textContent = '네트워크 오류'; s.style.display = ''; }
+    });
+  });
 }
 <\/script>
 </body>
