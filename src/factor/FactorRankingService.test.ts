@@ -472,6 +472,41 @@ describe('FactorRankingService', () => {
   // ---------------------------------------------------------------------------
 
   describe('fundamentals integration', () => {
+    it('I1: fundamentals fetch failure degrades gracefully to price-only ranking', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // getStocks succeeds (so the code reaches fundamentalsService.compute)
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }));
+
+      // FundamentalsService that always rejects (simulates DART down / corpCodeMap throw)
+      const failingFundamentals = {
+        compute: async (_entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          throw new Error('DART corpCodeMap error');
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: failingFundamentals,
+      });
+
+      // Must not throw — degrades to price-only ranking
+      const result = await service.rank();
+
+      // Ranked list is still non-empty
+      expect(result.scored.length).toBeGreaterThan(0);
+
+      // In price-only mode, no 'value' or 'quality' factor is present in any scored entry.
+      for (const entry of result.scored) {
+        expect(entry.factors['value']).toBeUndefined();
+        expect(entry.factors['quality']).toBeUndefined();
+      }
+    });
+
     it('includes value and quality in scored[].factors when getStocks + fundamentals provided', async () => {
       const model = new FactorModel(undefined, SMALL_PERIODS);
 

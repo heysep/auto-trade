@@ -332,9 +332,57 @@ describe('FundamentalsService – caching', () => {
       svc.compute(entries),
     ]);
 
-    // All 3 should return the same result, but DART was only fetched once
+    // All 3 should return the same result (deep equality), but DART was only fetched once.
+    // Note: projectEntries produces new Map objects on each call, so reference equality
+    // (toBe) no longer holds — use toEqual to verify structural equivalence.
     expect(fetchCount).toBe(1); // corpCodeMap + financials each called once
-    expect(r1).toBe(r2);
-    expect(r2).toBe(r3);
+    expect(r1).toEqual(r2);
+    expect(r2).toEqual(r3);
+  });
+
+  it('I2: cache hit with superset entries fills missing symbols with neutral scores', async () => {
+    // Prime cache with symbols A + B only.
+    // Then call compute() with A + B + C (C absent from corpMap → not in cache).
+    // projectEntries must return C with value=0, quality=0 rather than omitting it.
+    const corpMap = new Map([
+      ['A', 'CC_A'],
+      ['B', 'CC_B'],
+      // C intentionally absent from corpMap so financials fetch is skipped → C gets 0 scores
+    ]);
+    const dart = makeDartClient({
+      corpMap,
+      financialsFor: async (corpCode) => {
+        if (corpCode === 'CC_A') return { corpCode, year: 2024, netIncome: 50, totalEquity: 200, grossProfit: 30, totalAssets: 400, totalLiabilities: 80 };
+        if (corpCode === 'CC_B') return { corpCode, year: 2024, netIncome: 10, totalEquity:  50, grossProfit:  8, totalAssets: 100, totalLiabilities: 30 };
+        return null;
+      },
+    });
+
+    let now = 0;
+    const svc = new FundamentalsService({ dart, year: 2024, now: () => now, ttlMs: 60_000 });
+
+    // First call: prime cache with A + B
+    await svc.compute([
+      { symbol: 'A', marketCap: 1_000 },
+      { symbol: 'B', marketCap:   500 },
+    ]);
+
+    // Still within TTL — second call with superset A + B + C hits the cache.
+    now = 30_000;
+    const result = await svc.compute([
+      { symbol: 'A', marketCap: 1_000 },
+      { symbol: 'B', marketCap:   500 },
+      { symbol: 'C', marketCap: 2_000 },
+    ]);
+
+    // C was not in the original cache → projectEntries must fill it with 0.
+    expect(result.value.has('C')).toBe(true);
+    expect(result.value.get('C')).toBe(0);
+    expect(result.quality.has('C')).toBe(true);
+    expect(result.quality.get('C')).toBe(0);
+
+    // A and B should still be present (non-zero, since they had financials data).
+    expect(result.value.has('A')).toBe(true);
+    expect(result.value.has('B')).toBe(true);
   });
 });

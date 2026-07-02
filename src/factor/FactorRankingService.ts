@@ -156,25 +156,33 @@ export class FactorRankingService {
     let fundamentalsData: { value: Map<string, number>; quality: Map<string, number> } | undefined;
 
     if (this.getStocksImpl !== undefined && this.fundamentalsService !== undefined) {
-      const universeSymbols = entries.map((e) => e.symbol);
-      const stocksData = await this.getStocksImpl(universeSymbols);
-      const stockMap = new Map(stocksData.map((s) => [s.symbol, s]));
+      try {
+        const universeSymbols = entries.map((e) => e.symbol);
+        const stocksData = await this.getStocksImpl(universeSymbols);
+        const stockMap = new Map(stocksData.map((s) => [s.symbol, s]));
 
-      // Build marketCap entries for ALL scorable symbols.
-      // Symbols missing sharesOutstanding or lastClose get marketCap=0
-      // → FundamentalsService imputes their value/quality to 0 (neutral).
-      const marketCapEntries: MarketCapEntry[] = entries.map((e) => {
-        const stock = stockMap.get(e.symbol);
-        const shares = stock?.sharesOutstanding;
-        const lastClose = e.prices[e.prices.length - 1];
-        const marketCap =
-          shares !== undefined && lastClose !== undefined
-            ? shares * lastClose
-            : 0;
-        return { symbol: e.symbol, marketCap };
-      });
+        // Build marketCap entries for ALL scorable symbols.
+        // Symbols missing sharesOutstanding or lastClose get marketCap=0
+        // → FundamentalsService imputes their value/quality to 0 (neutral).
+        const marketCapEntries: MarketCapEntry[] = entries.map((e) => {
+          const stock = stockMap.get(e.symbol);
+          const shares = stock?.sharesOutstanding;
+          const lastClose = e.prices[e.prices.length - 1];
+          const marketCap =
+            shares !== undefined && lastClose !== undefined
+              ? shares * lastClose
+              : 0;
+          return { symbol: e.symbol, marketCap };
+        });
 
-      fundamentalsData = await this.fundamentalsService.compute(marketCapEntries);
+        fundamentalsData = await this.fundamentalsService.compute(marketCapEntries);
+      } catch (err) {
+        // DART / fundamentals fetch failed; degrade to price-only ranking.
+        // Log a warning and leave fundamentalsData as undefined so FactorModel
+        // falls through to momentum + volatility scoring only.
+        console.warn('[FactorRankingService] fundamentals fetch failed — using price-only ranking', err);
+        fundamentalsData = undefined;
+      }
     }
 
     const scored = this.model.score(entries, fundamentalsData);

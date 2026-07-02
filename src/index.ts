@@ -47,6 +47,11 @@ const STATE_SAVE_MS = 60_000;
 const STRATEGY_CAPITAL = 10_000_000;
 const RISK_LIMITS = { maxPositionPct: 30, dailyMaxLoss: 500_000, maxConsecutiveLosses: 5 };
 
+// C1: Factor portfolio uses a much larger capital base and looser concentration limits.
+// TSMOM strategies remain on the 10M/30% config above.
+const FACTOR_PORTFOLIO_CAPITAL = 100_000_000;
+const FACTOR_PORTFOLIO_LIMITS = { maxPositionPct: 15, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 10 };
+
 const marketOf = (c: Currency): Market => (c === 'KRW' ? 'KR' : 'US');
 
 export function bootstrap() {
@@ -63,6 +68,12 @@ export function bootstrap() {
   const risk = new RiskManager();
 
   const riskContext = (strategy: Strategy, symbol: string): RiskContext => {
+    // C1: factor portfolio (id=1000) runs on ₩100M with 15% max-position and lenient
+    // loss limits. TSMOM strategies stay on the 10M/30% config.
+    const isFactorPortfolio = strategy.id === FACTOR_PORTFOLIO_STRATEGY_ID;
+    const capital = isFactorPortfolio ? FACTOR_PORTFOLIO_CAPITAL : STRATEGY_CAPITAL;
+    const limits  = isFactorPortfolio ? FACTOR_PORTFOLIO_LIMITS  : RISK_LIMITS;
+
     const positions = repo.getPositions(strategy.id, strategy.mode);
     // Open mark-to-market loss so the daily-loss halt isn't blind to unrealized drawdown.
     const unrealizedPnl = positions.reduce((s, pos) => {
@@ -71,15 +82,15 @@ export function bootstrap() {
     }, 0);
     const dailyRealizedPnl = tracker.dailyRealizedPnl(strategy.id, strategy.mode, strategy.currency, Date.now());
     // Record a daily-max-loss breach (realized + open) so it counts against §7 promotion.
-    if (dailyRealizedPnl + unrealizedPnl <= -RISK_LIMITS.dailyMaxLoss) {
+    if (dailyRealizedPnl + unrealizedPnl <= -limits.dailyMaxLoss) {
       tracker.markDailyLoss(strategy.id, strategy.mode, strategy.currency, Date.now());
     }
     return {
       mode: strategy.mode,
       // Single source of truth: the API-mutable registry status feeds the live-enable gate.
       status: registry.get(strategy.id)?.status ?? 'PAPER_TESTING',
-      capital: STRATEGY_CAPITAL,
-      limits: RISK_LIMITS,
+      capital,
+      limits,
       positions,
       openOrdersForSymbol: repo.getOpenOrdersBySymbol(symbol, strategy.mode).length,
       // Live, round-trip + market-tz derived halts (no longer hardcoded 0).
@@ -227,11 +238,20 @@ export function bootstrap() {
       submitIntent: async (pIntent) => {
         const quote = book.getQuote(pIntent.symbol);
         if (quote === undefined) throw new Error(`no quote for ${pIntent.symbol}`);
-        await orderManager.handleIntent(
+        // C2: inspect the structured outcome — treat 'blocked' and 'error' as
+        // thrown errors so FactorPortfolioManager routes them to `skipped`
+        // instead of silently counting them as `ordersSubmitted`.
+        const outcome = await orderManager.handleIntent(
           factorStrategy,
           { side: pIntent.side, quantity: pIntent.quantity, orderType: 'MARKET', reason: pIntent.reason },
           quote,
         );
+        if (outcome.status !== 'placed') {
+          const msg = outcome.status === 'blocked'
+            ? (outcome.reason ?? 'risk blocked')
+            : String((outcome as { error?: unknown }).error ?? outcome.status);
+          throw new Error(msg);
+        }
       },
       isHalted: () => haltSwitch.halted,
     },

@@ -70,18 +70,24 @@ export class FundamentalsService {
    *
    * Cached for TTL ms; concurrent cold-cache callers join the single in-flight
    * computation (thundering-herd guard).
+   *
+   * Symbols absent from the cached maps (e.g. added after the cache was primed)
+   * are projected to 0 (neutral) so FactorModel's all-or-nothing coverage gate
+   * never silently drops Value + Quality for the whole cross-section.
    */
   async compute(entries: MarketCapEntry[]): Promise<FundamentalsResult> {
     const nowMs = this.now();
 
-    // Cache hit
+    // Cache hit — project onto the currently requested entry set so new symbols
+    // introduced since the cache was built receive neutral (0) scores.
     if (this.cache !== undefined && nowMs - this.cache.asOf < this.ttlMs) {
-      return this.cache.result;
+      return this.projectEntries(this.cache.result, entries);
     }
 
-    // In-flight dedup
+    // In-flight dedup: join the pending rebuild then project.
     if (this.inflight !== undefined) {
-      return this.inflight;
+      const result = await this.inflight;
+      return this.projectEntries(result, entries);
     }
 
     // Start build
@@ -89,10 +95,25 @@ export class FundamentalsService {
     try {
       const result = await this.inflight;
       this.cache = { result, asOf: nowMs };
-      return result;
+      return this.projectEntries(result, entries);
     } finally {
       this.inflight = undefined;
     }
+  }
+
+  /**
+   * Project cached maps onto a (potentially different) entry set.
+   * Any symbol absent from the cached maps receives neutral scores (0)
+   * so downstream callers always see full coverage.
+   */
+  private projectEntries(result: FundamentalsResult, entries: MarketCapEntry[]): FundamentalsResult {
+    const value = new Map<string, number>();
+    const quality = new Map<string, number>();
+    for (const e of entries) {
+      value.set(e.symbol, result.value.get(e.symbol) ?? 0);
+      quality.set(e.symbol, result.quality.get(e.symbol) ?? 0);
+    }
+    return { value, quality };
   }
 
   // ---------------------------------------------------------------------------

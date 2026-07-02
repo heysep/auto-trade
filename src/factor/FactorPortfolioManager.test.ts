@@ -9,6 +9,15 @@ import {
   type RebalanceConfig,
   type PortfolioOrderIntent,
 } from './FactorPortfolioManager.js';
+import { OrderManager } from '../order/OrderManager.js';
+import { RiskManager, type RiskContext } from '../risk/RiskManager.js';
+import { PaperBroker } from '../broker/PaperBroker.js';
+import { QuoteBook } from '../market/PriceSource.js';
+import { InMemoryRepository } from '../persistence/repository.js';
+import { InMemoryEventLogger } from '../observability/EventLogger.js';
+import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
+import type { Strategy } from '../strategy/Strategy.js';
+import type { Quote } from '../domain/types.js';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -364,5 +373,178 @@ describe('FactorPortfolioManager.rebalance – asOf timestamp', () => {
     const after = Date.now();
     expect(plan.asOf).toBeGreaterThanOrEqual(before);
     expect(plan.asOf).toBeLessThanOrEqual(after);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 + C2 Integration: real OrderManager + RiskManager + PaperBroker
+// ---------------------------------------------------------------------------
+//
+// Verifies the production wire-up in src/index.ts:
+//   C1 – factor portfolio uses capital=100M / maxPositionPct=15% so a ₩10M
+//        per-name slice is not blocked by the risk gate.
+//   C2 – when the risk gate blocks an order the C2 submitIntent bridge throws,
+//        routing the intent to `skipped` instead of `ordersSubmitted`.
+//
+// Math:
+//   price = 500_000 KRW
+//   referencePrice = ask * (1 + 50 bps) = 500_000 * 1.005 = 502_500
+//
+//   C1: totalNotional=20M, topN=2 → perName=10M
+//       targetQty = floor(10M / 500_000) = 20
+//       notional  = 20 * 502_500 = 10_050_000  ≤ 15M  → PLACED
+//
+//   C2: totalNotional=50M, topN=2 → perName=25M
+//       targetQty = floor(25M / 500_000) = 50
+//       notional  = 50 * 502_500 = 25_125_000  > 15M  → BLOCKED → skipped
+// ---------------------------------------------------------------------------
+
+describe('FactorPortfolioManager C1+C2 integration (real OrderManager/RiskManager/PaperBroker)', () => {
+  const NOW = 1_700_000_000_000;
+  const PRICE = 500_000;
+  const FACTOR_CAPITAL = 100_000_000;
+  const FACTOR_LIMITS = { maxPositionPct: 15, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 10 };
+
+  const factorStrategy: Strategy = {
+    id: FACTOR_PORTFOLIO_STRATEGY_ID,
+    symbols: new Set<string>(),
+    currency: 'KRW',
+    mode: 'PAPER',
+    evaluate: () => null,
+  };
+
+  /** Wire a real pipeline identical to production but with injectable capital/limits. */
+  function wireIntegration(capital: number, limits: typeof FACTOR_LIMITS) {
+    const repo    = new InMemoryRepository();
+    const book    = new QuoteBook();
+    const broker  = new PaperBroker(repo, book, { now: () => NOW, maxQuoteAgeMs: 1e12 });
+    const logger  = new InMemoryEventLogger();
+    const risk    = new RiskManager();
+
+    const riskContext = (_strategy: Strategy, symbol: string): RiskContext => ({
+      mode: 'PAPER',
+      status: 'PAPER_TESTING',
+      capital,
+      limits,
+      positions: repo.getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, 'PAPER'),
+      openOrdersForSymbol: repo.getOpenOrdersBySymbol(symbol, 'PAPER').length,
+      dailyRealizedPnl: 0,
+      consecutiveLosses: 0,
+    });
+
+    const orderManager = new OrderManager({
+      brokerFor: () => broker,
+      risk,
+      riskContext,
+      logger,
+      now: () => NOW,
+    });
+
+    /** C2-aware bridge: mirrors src/index.ts submitIntent */
+    const submitIntent = async (pIntent: PortfolioOrderIntent): Promise<void> => {
+      const quote = book.getQuote(pIntent.symbol);
+      if (quote === undefined) throw new Error(`no quote for ${pIntent.symbol}`);
+      const outcome = await orderManager.handleIntent(
+        factorStrategy,
+        { side: pIntent.side, quantity: pIntent.quantity, orderType: 'MARKET', reason: pIntent.reason },
+        quote,
+      );
+      if (outcome.status !== 'placed') {
+        const msg = outcome.status === 'blocked'
+          ? (outcome.reason ?? 'risk blocked')
+          : String((outcome as { error?: unknown }).error ?? outcome.status);
+        throw new Error(msg);
+      }
+    };
+
+    return { repo, book, broker, logger, risk, orderManager, submitIntent };
+  }
+
+  function makeQuote(symbol: string): Quote {
+    return { symbol, currency: 'KRW', bid: PRICE, ask: PRICE, last: PRICE, ts: NOW };
+  }
+
+  function makeRankingFor(symbols: string[]) {
+    return {
+      rank: async (limit?: number) => ({
+        scored: (limit !== undefined ? symbols.slice(0, limit) : symbols).map((s) => ({ symbol: s })),
+      }),
+    };
+  }
+
+  it('C1: factor portfolio risk config allows ₩10M per-name BUY — orders are placed', async () => {
+    const symbols = ['A', 'B'];
+    const { book, submitIntent } = wireIntegration(FACTOR_CAPITAL, FACTOR_LIMITS);
+
+    // Pre-populate quotes
+    for (const sym of symbols) book.set(makeQuote(sym));
+
+    const manager = new FactorPortfolioManager(
+      {
+        ranking:      makeRankingFor(symbols),
+        priceOf:      (sym) => book.getQuote(sym)?.last,
+        currentQty:   () => 0,
+        heldSymbols:  () => [],
+        submitIntent,
+        isHalted:     () => false,
+        now:          () => NOW,
+      },
+      {
+        strategyId:    FACTOR_PORTFOLIO_STRATEGY_ID,
+        topN:          2,
+        totalNotional: 20_000_000,   // perName = 10M → 20 shares @ 500K → notional ≈ 10.05M ≤ 15M ✓
+        currency:      'KRW',
+        mode:          'PAPER',
+      },
+    );
+
+    const plan = await manager.rebalance();
+
+    expect(plan.halted).toBe(false);
+    // Both symbols must be submitted (not skipped)
+    expect(plan.ordersSubmitted).toHaveLength(2);
+    expect(plan.skipped).toHaveLength(0);
+    // Both are BUY orders
+    for (const order of plan.ordersSubmitted) {
+      expect(order.side).toBe('BUY');
+    }
+  });
+
+  it('C2: over-concentrated BUY is blocked by risk gate and lands in skipped (not ordersSubmitted)', async () => {
+    const symbols = ['A', 'B'];
+    const { book, submitIntent } = wireIntegration(FACTOR_CAPITAL, FACTOR_LIMITS);
+
+    // Pre-populate quotes
+    for (const sym of symbols) book.set(makeQuote(sym));
+
+    const manager = new FactorPortfolioManager(
+      {
+        ranking:      makeRankingFor(symbols),
+        priceOf:      (sym) => book.getQuote(sym)?.last,
+        currentQty:   () => 0,
+        heldSymbols:  () => [],
+        submitIntent,
+        isHalted:     () => false,
+        now:          () => NOW,
+      },
+      {
+        strategyId:    FACTOR_PORTFOLIO_STRATEGY_ID,
+        topN:          2,
+        totalNotional: 50_000_000,   // perName = 25M → 50 shares @ 500K → notional ≈ 25.125M > 15M → BLOCKED
+        currency:      'KRW',
+        mode:          'PAPER',
+      },
+    );
+
+    const plan = await manager.rebalance();
+
+    expect(plan.halted).toBe(false);
+    // All blocked intents must be in skipped — not ordersSubmitted (C2 regression guard)
+    expect(plan.ordersSubmitted).toHaveLength(0);
+    expect(plan.skipped.length).toBeGreaterThan(0);
+    // Reason string must reflect the risk-gate denial
+    for (const s of plan.skipped) {
+      expect(s.reason).toMatch(/exceeds max position 15%/);
+    }
   });
 });
