@@ -70,11 +70,67 @@ export class TossApiClient {
     return this.request(`${PREFIX}/stocks?symbols=${symbols.map(encodeURIComponent).join(',')}`);
   }
   // Confirmed via openapi.json 2026-07. interval enum: '1m' | '1d'. count default 100, max 200.
+  // Paginates backward when count > 200 (Toss hard-caps each call at 200 bars).
   async getCandles(symbol: string, interval: '1m' | '1d', count = 200): Promise<TossCandle[]> {
-    const page = await this.request<TossCandlePage>(
-      `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&count=${count}&adjusted=true`,
+    // Fast path: single call when count ≤ 200 (preserves existing behaviour; no `before` param).
+    if (count <= 200) {
+      const page = await this.request<TossCandlePage>(
+        `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&count=${count}&adjusted=true`,
+      );
+      return page.candles ?? [];
+    }
+
+    // Paginate backward for counts that exceed the per-call maximum of 200 bars.
+    // Use a Map keyed by timestamp to deduplicate boundary bars that appear on two pages.
+    const accumulated = new Map<string, TossCandle>();
+    const maxPages = Math.ceil(count / 200) + 2; // safety cap
+    let before: string | undefined;
+
+    for (let pageNum = 0; pageNum < maxPages; pageNum++) {
+      const remaining = count - accumulated.size;
+      const fetchCount = Math.min(200, remaining);
+      const beforeParam = before !== undefined ? `&before=${encodeURIComponent(before)}` : '';
+      const url =
+        `${PREFIX}/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}` +
+        `&count=${fetchCount}&adjusted=true${beforeParam}`;
+
+      const resp = await this.request<TossCandlePage>(url);
+      const candles = resp.candles ?? [];
+
+      if (candles.length === 0) break;
+
+      for (const candle of candles) {
+        accumulated.set(candle.timestamp, candle);
+      }
+
+      if (accumulated.size >= count) break;
+
+      // Determine cursor for the next (older) page.
+      if (typeof resp.nextBefore === 'string') {
+        before = resp.nextBefore; // explicit cursor from Toss
+      } else if (resp.nextBefore === null) {
+        break; // Toss explicitly signals no more pages
+      } else {
+        // nextBefore absent (undefined) — fall back to the oldest timestamp in this batch.
+        let oldestTs: string | undefined;
+        let oldestMs = Infinity;
+        for (const candle of candles) {
+          const ms = Date.parse(candle.timestamp);
+          if (ms < oldestMs) {
+            oldestMs = ms;
+            oldestTs = candle.timestamp;
+          }
+        }
+        if (oldestTs === undefined) break;
+        before = oldestTs;
+      }
+    }
+
+    // Sort ascending (oldest first), then keep only the newest `count` bars.
+    const sorted = [...accumulated.values()].sort(
+      (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
     );
-    return page.candles ?? [];
+    return sorted.slice(-count);
   }
 
   // --- writes (used by LiveBroker only) ---
