@@ -13,6 +13,8 @@ import type { PerformanceMetrics } from '../performance/PerformanceAnalyzer.js';
 import type { StrategyDeployer } from './StrategyDeployer.js';
 import type { FactorRankingService, RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
+import type { FactorPortfolioManager, RebalancePlan } from '../factor/FactorPortfolioManager.js';
+import type { TossPriceItem } from '../toss/types.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -25,6 +27,9 @@ const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
   REJECTED: [],
 };
 const GATED: StrategyStatus[] = ['APPROVED', 'LIVE'];   // require approval + promotion criteria
+
+/** Reserved strategy id for the AQR 4-Factor Portfolio. Never used by StrategyEngine. */
+export const FACTOR_PORTFOLIO_STRATEGY_ID = 1000;
 
 export type StatusChangeResult =
   | { ok: true; view: StrategyView }
@@ -49,6 +54,12 @@ export interface TradingSystemDeps {
   factorRanking?: FactorRankingService;
   /** Universe factor backtest service. Omitted => factorBacktest() returns 503. */
   factorBacktest?: FactorBacktestService;
+  /** Factor portfolio manager. Omitted => rebalanceFactorPortfolio() returns 503. */
+  factorPortfolio?: FactorPortfolioManager;
+  /** Price fetcher for rebalance. Omitted => rebalanceFactorPortfolio() returns 503. */
+  getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
+  /** Top-N override for rebalance. Default: 10. */
+  factorPortfolioTopN?: number;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -193,6 +204,66 @@ export class TradingSystem {
       return svc.rank(limit);
     }
     return svc.rank();
+  }
+
+  /**
+   * Fetch live prices for top-N ranked symbols UNION held symbols, populate QuoteBook,
+   * then call FactorPortfolioManager.rebalance().
+   * Returns 503 when factorPortfolio or getPrices dep is absent.
+   * Returns 409 when halted.
+   * Returns 502 when price fetch fails.
+   */
+  async rebalanceFactorPortfolio(): Promise<RebalancePlan | { error: string; code: number }> {
+    const mgr = this.deps.factorPortfolio;
+    const getPrices = this.deps.getPrices;
+    if (mgr === undefined || getPrices === undefined) {
+      return { error: 'factor portfolio unavailable', code: 503 };
+    }
+    if (this.deps.haltSwitch.halted) {
+      return { error: 'trading halted', code: 409 };
+    }
+
+    const topN = this.deps.factorPortfolioTopN ?? 10;
+
+    // Get ranking to know which symbols to fetch prices for
+    const rankingSvc = this.deps.factorRanking;
+    let topSymbols: string[] = [];
+    if (rankingSvc !== undefined) {
+      const result = await rankingSvc.rank(topN);
+      topSymbols = result.scored.map((s) => s.symbol);
+    }
+
+    // Include held symbols so we can price exits
+    const held = this.deps.repo
+      .getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, 'PAPER')
+      .filter((p) => p.quantity !== 0)
+      .map((p) => p.symbol);
+
+    const symbols = [...new Set([...topSymbols, ...held])];
+
+    // Fetch prices; any failure aborts with 502
+    let items: TossPriceItem[];
+    try {
+      items = await getPrices(symbols);
+    } catch {
+      return { error: 'price fetch failed', code: 502 };
+    }
+
+    // Populate QuoteBook so FactorPortfolioManager.priceOf can find them
+    for (const item of items) {
+      const last = Number(item.lastPrice);
+      if (!Number.isFinite(last) || last <= 0) continue;
+      this.deps.book.set({
+        symbol: item.symbol,
+        currency: 'KRW',
+        bid: last,
+        ask: last,
+        last,
+        ts: Date.now(),
+      });
+    }
+
+    return mgr.rebalance();
   }
 
   async backtest(input: {
