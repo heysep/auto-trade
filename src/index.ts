@@ -30,6 +30,8 @@ import { buildServer } from './api/server.js';
 import { FactorRankingService } from './factor/FactorRankingService.js';
 import { FactorBacktestService } from './factor/FactorBacktestService.js';
 import { FactorModel } from './factor/FactorModel.js';
+import { DartApiClient } from './dart/DartApiClient.js';
+import { FundamentalsService } from './factor/FundamentalsService.js';
 import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
@@ -164,13 +166,28 @@ export function bootstrap() {
   // Symbol search uses a static KRX list — Toss /stocks needs explicit symbols (no list-all endpoint).
   const symbolCatalog = new SymbolCatalog(async () => KRX_SYMBOLS);
 
+  // OpenDART fundamentals: enabled when DART_API_KEY is non-empty.
+  // Provides Value (earnings yield, book-to-market) + Quality (ROE, GP/Assets, D/E) factors.
+  // Never log the API key.
+  let dartFundamentals: FundamentalsService | undefined;
+  let dartGetStocks: ((s: string[]) => Promise<import('./toss/types.js').TossStock[]>) | undefined;
+  if (config.dart.apiKey !== '') {
+    const dartClient = new DartApiClient({ apiKey: config.dart.apiKey });
+    dartFundamentals = new FundamentalsService({ dart: dartClient, year: 2024 });
+    dartGetStocks = (s) => client.getStocks(s);
+  }
+
   // Factor ranking: assembles full KRX universe, fetches 280 daily candles per symbol
   // sequentially (respects rate limits), runs AQR FactorModel. 280 bars > 252 needed
   // for 12-month momentum + 252-bar vol/MDD, with margin for non-trading days.
+  // With DART key: full 4-factor model (Value + Momentum + Quality + Defensive).
+  // Without DART key: price-only 2-factor model (Momentum + Defensive).
   const factorRanking = new FactorRankingService({
     universe: () => KRX_SYMBOLS,
     getCandles: (s, i, n) => client.getCandles(s, i, n),
     model: new FactorModel(),
+    ...(dartGetStocks !== undefined ? { getStocks: dartGetStocks } : {}),
+    ...(dartFundamentals !== undefined ? { fundamentals: dartFundamentals } : {}),
   });
 
   // Factor backtest: same KRX universe + 500 daily bars → BacktestSymbol[] matrix (cached 1h).

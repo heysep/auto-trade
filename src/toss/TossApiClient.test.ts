@@ -7,16 +7,41 @@ import type { TossStock, TossCandle, TossCandlePage } from './types.js';
 const fakeTokens = { getToken: async () => 'fake-token' } as never;
 
 describe('TossApiClient.getStocks', () => {
-  it('returns whatever the request helper resolves to', async () => {
+  it('returns stocks with the correct fields', async () => {
     const client = new TossApiClient(fakeTokens);
-    const fixture: TossStock[] = [
+    const rawFixture = [
       { symbol: '005930', name: '삼성전자', market: 'KR' },
       { symbol: '000660', name: 'SK하이닉스', market: 'KR' },
     ];
-    (client as unknown as Record<string, unknown>)['request'] = async () => fixture;
+    (client as unknown as Record<string, unknown>)['request'] = async () => rawFixture;
 
     const result = await client.getStocks(['005930', '000660']);
-    expect(result).toBe(fixture);
+    expect(result).toEqual([
+      { symbol: '005930', name: '삼성전자', market: 'KR' },
+      { symbol: '000660', name: 'SK하이닉스', market: 'KR' },
+    ]);
+  });
+
+  it('parses sharesOutstanding from string to number, omits if absent', async () => {
+    const client = new TossApiClient(fakeTokens);
+    (client as unknown as Record<string, unknown>)['request'] = async () => [
+      { symbol: '005930', name: '삼성전자', market: 'KR', sharesOutstanding: '5969782550' },
+      { symbol: '000660', name: 'SK하이닉스', market: 'KR' }, // no sharesOutstanding
+    ];
+
+    const result = await client.getStocks(['005930', '000660']);
+    expect(result[0]?.sharesOutstanding).toBe(5_969_782_550);
+    expect(result[1]?.sharesOutstanding).toBeUndefined();
+  });
+
+  it('omits sharesOutstanding when the value is NaN (non-numeric string)', async () => {
+    const client = new TossApiClient(fakeTokens);
+    (client as unknown as Record<string, unknown>)['request'] = async () => [
+      { symbol: '005930', name: '삼성전자', market: 'KR', sharesOutstanding: 'N/A' },
+    ];
+
+    const result = await client.getStocks(['005930']);
+    expect(result[0]?.sharesOutstanding).toBeUndefined();
   });
 
   it('builds a URL path that includes the encoded symbols query param', async () => {

@@ -98,6 +98,8 @@ export interface TossStock {
   market: string;
   englishName?: string;
   currency?: string;
+  /** Total shares outstanding (number of issued shares). Parsed from the API string field. */
+  sharesOutstanding?: number;
 }
 
 // --- Candle chart (GET /api/v1/candles) ---

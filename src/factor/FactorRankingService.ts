@@ -4,6 +4,7 @@
 
 import type { TossStock, TossCandle } from '../toss/types.js';
 import type { FactorModel, ScoredSymbol } from './FactorModel.js';
+import type { FundamentalsService, MarketCapEntry } from './FundamentalsService.js';
 
 export interface FactorRankingDeps {
   /** Supplier of the universe; called on every cache miss. May be sync or async. */
@@ -18,6 +19,16 @@ export interface FactorRankingDeps {
   ttlMs?: number;
   /** Number of daily candles to fetch per symbol. Default: 280 (needs >252 for 12-month momentum). */
   candleCount?: number;
+  /**
+   * Optional: fetch stock metadata (sharesOutstanding) for the universe.
+   * Must be provided together with `fundamentals` to enable Value + Quality factors.
+   */
+  getStocks?: (symbols: string[]) => Promise<TossStock[]>;
+  /**
+   * Optional: FundamentalsService for Value + Quality factor computation.
+   * Must be provided together with `getStocks` to enable Value + Quality factors.
+   */
+  fundamentals?: FundamentalsService;
 }
 
 export interface RankingResult {
@@ -42,6 +53,8 @@ export class FactorRankingService {
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly candleCount: number;
+  private readonly getStocksImpl: ((symbols: string[]) => Promise<TossStock[]>) | undefined;
+  private readonly fundamentalsService: FundamentalsService | undefined;
 
   private cache: RankingResult | undefined;
   private inflight: Promise<RankingResult> | undefined;
@@ -53,6 +66,8 @@ export class FactorRankingService {
     this.now = deps.now ?? Date.now;
     this.ttlMs = deps.ttlMs ?? DEFAULT_TTL_MS;
     this.candleCount = deps.candleCount ?? 280;
+    this.getStocksImpl = deps.getStocks;
+    this.fundamentalsService = deps.fundamentals;
   }
 
   /**
@@ -136,7 +151,33 @@ export class FactorRankingService {
       }
     }
 
-    const scored = this.model.score(entries);
+    // If both getStocks and fundamentals are provided, build Value + Quality factor maps.
+    // Otherwise fall through with price factors only.
+    let fundamentalsData: { value: Map<string, number>; quality: Map<string, number> } | undefined;
+
+    if (this.getStocksImpl !== undefined && this.fundamentalsService !== undefined) {
+      const universeSymbols = entries.map((e) => e.symbol);
+      const stocksData = await this.getStocksImpl(universeSymbols);
+      const stockMap = new Map(stocksData.map((s) => [s.symbol, s]));
+
+      // Build marketCap entries for ALL scorable symbols.
+      // Symbols missing sharesOutstanding or lastClose get marketCap=0
+      // → FundamentalsService imputes their value/quality to 0 (neutral).
+      const marketCapEntries: MarketCapEntry[] = entries.map((e) => {
+        const stock = stockMap.get(e.symbol);
+        const shares = stock?.sharesOutstanding;
+        const lastClose = e.prices[e.prices.length - 1];
+        const marketCap =
+          shares !== undefined && lastClose !== undefined
+            ? shares * lastClose
+            : 0;
+        return { symbol: e.symbol, marketCap };
+      });
+
+      fundamentalsData = await this.fundamentalsService.compute(marketCapEntries);
+    }
+
+    const scored = this.model.score(entries, fundamentalsData);
     return { asOf: now, scored, universeSize, fetched, skipped };
   }
 

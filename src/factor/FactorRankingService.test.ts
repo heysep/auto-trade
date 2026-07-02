@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { FactorRankingService } from './FactorRankingService.js';
 import { FactorModel } from './FactorModel.js';
+import type { FundamentalsService, MarketCapEntry, FundamentalsResult } from './FundamentalsService.js';
 import type { TossStock, TossCandle } from '../toss/types.js';
 
 // Small periods so a 5-bar price series is enough for all four raw factors.
@@ -463,6 +464,176 @@ describe('FactorRankingService', () => {
       now = 1_000; // still fresh
       await service.rank();
       expect(fetchCount).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fundamentals integration (value + quality factors via OpenDART)
+  // ---------------------------------------------------------------------------
+
+  describe('fundamentals integration', () => {
+    it('includes value and quality in scored[].factors when getStocks + fundamentals provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // getStocks returns sharesOutstanding for each symbol
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }));
+
+      // Fake FundamentalsService: returns maps covering all input symbols
+      let computeCallCount = 0;
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          computeCallCount++;
+          const syms = entries.map((e) => e.symbol);
+          return {
+            value: new Map(syms.map((s) => [s, 0] as [string, number])),
+            quality: new Map(syms.map((s) => [s, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      const result = await service.rank();
+
+      expect(result.scored.length).toBeGreaterThan(0);
+      for (const s of result.scored) {
+        // When fundamentals maps cover all scorable symbols, value + quality must appear.
+        expect(s.factors.value).toBeDefined();
+        expect(s.factors.quality).toBeDefined();
+        expect(s.factors.momentum).toBeDefined();
+        expect(s.factors.defensive).toBeDefined();
+      }
+      expect(computeCallCount).toBe(1);
+    });
+
+    it('passes market-cap entries derived from sharesOutstanding * lastClose to fundamentals.compute', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      const SHARES = 500_000;
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: SHARES }));
+
+      let capturedEntries: MarketCapEntry[] = [];
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          capturedEntries = entries;
+          return {
+            value:   new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+            quality: new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      await service.rank();
+
+      // capturedEntries must cover all successfully-fetched symbols
+      expect(capturedEntries).toHaveLength(UNIVERSE.length);
+      for (const entry of capturedEntries) {
+        // marketCap = SHARES * lastClose; lastClose for RISING is 108
+        expect(entry.marketCap).toBeGreaterThan(0);
+        expect(entry.marketCap).toBe(SHARES * (CLOSES_BY_SYMBOL[entry.symbol]?.at(-1) ?? 0));
+      }
+    });
+
+    it('omits value and quality when neither getStocks nor fundamentals is provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        // no getStocks, no fundamentals
+      });
+
+      const result = await service.rank();
+
+      for (const s of result.scored) {
+        expect(s.factors.value).toBeUndefined();
+        expect(s.factors.quality).toBeUndefined();
+        // Price factors still present
+        expect(s.factors.momentum).toBeDefined();
+        expect(s.factors.defensive).toBeDefined();
+      }
+    });
+
+    it('still works (price-only) if only one of getStocks/fundamentals is provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Only getStocks provided, no fundamentals service
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000 }));
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        // no fundamentals
+      });
+
+      const result = await service.rank();
+      expect(result.scored.length).toBeGreaterThan(0);
+      for (const s of result.scored) {
+        expect(s.factors.value).toBeUndefined();
+        expect(s.factors.quality).toBeUndefined();
+      }
+    });
+
+    it('symbols missing sharesOutstanding receive marketCap=0 (imputed to neutral in fundamentals)', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Only RISING gets sharesOutstanding; others don't
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) =>
+          s === 'RISING'
+            ? { symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }
+            : { symbol: s, name: s, market: 'KR' }, // no sharesOutstanding
+        );
+
+      let capturedEntries: MarketCapEntry[] = [];
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          capturedEntries = entries;
+          return {
+            value:   new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+            quality: new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      await service.rank();
+
+      // All symbols present in entries passed to compute
+      expect(capturedEntries).toHaveLength(UNIVERSE.length);
+
+      // Symbols without sharesOutstanding get marketCap=0
+      for (const entry of capturedEntries) {
+        if (entry.symbol !== 'RISING') {
+          expect(entry.marketCap).toBe(0);
+        }
+      }
     });
   });
 });

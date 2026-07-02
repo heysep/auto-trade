@@ -103,8 +103,25 @@ export class TossApiClient {
     return this.request(`${PREFIX}/market-calendar/${market}`);
   }
   // Confirmed via openapi.json 2026-07. `symbols` is REQUIRED (comma-separated, max 200).
-  getStocks(symbols: string[]): Promise<TossStock[]> {
-    return this.request(`${PREFIX}/stocks?symbols=${symbols.map(encodeURIComponent).join(',')}`);
+  // sharesOutstanding arrives as a string from the API; parse to number, omit if absent/NaN.
+  async getStocks(symbols: string[]): Promise<TossStock[]> {
+    // Use a local raw type: sharesOutstanding comes as a string from the Toss API.
+    type RawTossStock = Omit<TossStock, 'sharesOutstanding'> & { sharesOutstanding?: string };
+    const raw = await this.request<RawTossStock[]>(
+      `${PREFIX}/stocks?symbols=${symbols.map(encodeURIComponent).join(',')}`,
+    );
+    return raw.map((item) => {
+      const sharesRaw = item.sharesOutstanding;
+      const shares = sharesRaw !== undefined ? Number(sharesRaw) : NaN;
+      return {
+        symbol: item.symbol,
+        name: item.name,
+        market: item.market,
+        ...(item.englishName !== undefined ? { englishName: item.englishName } : {}),
+        ...(item.currency !== undefined ? { currency: item.currency } : {}),
+        ...(Number.isFinite(shares) ? { sharesOutstanding: shares } : {}),
+      };
+    });
   }
   // Confirmed via openapi.json 2026-07. interval enum: '1m' | '1d'. count default 100, max 200.
   // Paginates backward when count > 200 (Toss hard-caps each call at 200 bars).
