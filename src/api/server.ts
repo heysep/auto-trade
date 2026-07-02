@@ -494,7 +494,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       </div>
       <div id="rank-status" class="empty" style="display:none"></div>
       <table id="rank-table" style="display:none">
-        <thead><tr><th>순위</th><th>종목</th><th>섹터</th><th class="num">Composite</th><th class="num">Momentum</th><th class="num">Defensive</th></tr></thead>
+        <thead><tr><th>순위</th><th>종목</th><th>섹터</th><th class="num">Composite</th><th class="num">Momentum</th><th class="num">Defensive</th><th class="num">Value</th><th class="num">Quality</th></tr></thead>
         <tbody id="rank-tbody"></tbody>
       </table>
     </div>
@@ -958,6 +958,8 @@ function renderRanking(data) {
     var compositeColor = composite >= 0 ? 'pos' : 'neg';
     var momentum = (row.factors && row.factors.momentum != null) ? Number(row.factors.momentum).toFixed(2) : '';
     var defensive = (row.factors && row.factors.defensive != null) ? Number(row.factors.defensive).toFixed(2) : '';
+    var value = (row.factors && row.factors.value != null) ? Number(row.factors.value).toFixed(2) : '';
+    var quality = (row.factors && row.factors.quality != null) ? Number(row.factors.quality).toFixed(2) : '';
     return '<tr class="rank-row" data-sym="' + esc(row.symbol) + '" style="cursor:pointer">' +
       '<td class="num">' + esc(String(row.rank)) + '</td>' +
       '<td>' + esc(row.symbol) + '</td>' +
@@ -965,6 +967,8 @@ function renderRanking(data) {
       '<td class="num ' + compositeColor + '">' + esc(compositeStr) + '</td>' +
       '<td class="num">' + esc(momentum) + '</td>' +
       '<td class="num">' + esc(defensive) + '</td>' +
+      '<td class="num">' + esc(value) + '</td>' +
+      '<td class="num">' + esc(quality) + '</td>' +
     '</tr>';
   }).join('');
   table.querySelectorAll('.rank-row').forEach(function(tr) {
