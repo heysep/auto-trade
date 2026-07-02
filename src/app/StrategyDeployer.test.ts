@@ -18,9 +18,9 @@ function makeEngine(): StrategyEngine {
   });
 }
 
-const thresholdSpec: StrategySpec = {
-  type: 'threshold',
-  params: { buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000 },
+const tsmomSpec: StrategySpec = {
+  type: 'tsmom',
+  params: { lookback: 20, orderNotional: 1_000_000 },
 };
 
 describe('StrategyDeployer', () => {
@@ -35,12 +35,12 @@ describe('StrategyDeployer', () => {
       100,
     );
 
-    const record = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'my-strategy' });
+    const record = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'my-strategy' });
 
     expect(record.id).toBe(100);
     expect(record.symbol).toBe('005930');
     expect(record.name).toBe('my-strategy');
-    expect(record.spec).toEqual(thresholdSpec);
+    expect(record.spec).toEqual(tsmomSpec);
 
     // Strategy appears in registry
     expect(registry.get(100)).toBeDefined();
@@ -66,8 +66,8 @@ describe('StrategyDeployer', () => {
       1,
     );
 
-    const first = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'first' });
-    const second = deployer.deploy({ symbol: '035720', spec: thresholdSpec, name: 'second' });
+    const first = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'first' });
+    const second = deployer.deploy({ symbol: '035720', spec: tsmomSpec, name: 'second' });
 
     expect(first.id).toBe(1);
     expect(second.id).toBe(2);
@@ -85,8 +85,8 @@ describe('StrategyDeployer', () => {
       1,
     );
 
-    deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'a' });
-    deployer.deploy({ symbol: '035720', spec: thresholdSpec, name: 'b' });
+    deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'a' });
+    deployer.deploy({ symbol: '035720', spec: tsmomSpec, name: 'b' });
 
     const recs = deployer.records();
     expect(recs).toHaveLength(2);
@@ -100,21 +100,21 @@ describe('StrategyDeployer', () => {
       { engine: makeEngine(), registry: new StrategyRegistry(), watchList, currency: 'KRW', mode: 'PAPER' },
       1,
     );
-    deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'kr' });
+    deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'kr' });
     expect(watchList.list()[0]?.market).toBe('KR');
   });
 
   it('deploy uses US market for USD currency', () => {
     const watchList = new WatchList();
-    const smaSpec: StrategySpec = {
-      type: 'sma',
-      params: { fastPeriod: 5, slowPeriod: 20, orderNotional: 1000 },
+    const usdTsmomSpec: StrategySpec = {
+      type: 'tsmom',
+      params: { lookback: 20, orderNotional: 1000 },
     };
     const deployer = new StrategyDeployer(
       { engine: makeEngine(), registry: new StrategyRegistry(), watchList, currency: 'USD', mode: 'PAPER' },
       1,
     );
-    deployer.deploy({ symbol: 'AAPL', spec: smaSpec, name: 'us' });
+    deployer.deploy({ symbol: 'AAPL', spec: usdTsmomSpec, name: 'us' });
     expect(watchList.list()[0]?.market).toBe('US');
   });
 
@@ -129,7 +129,7 @@ describe('StrategyDeployer', () => {
       1,
     );
 
-    const record = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'a' });
+    const record = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'a' });
     onChange.mockClear();
 
     const result = deployer.undeploy(record.id);
@@ -156,8 +156,8 @@ describe('StrategyDeployer', () => {
       1,
     );
 
-    const r1 = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'a' });
-    deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'b' });
+    const r1 = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'a' });
+    deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'b' });
 
     // Undeploy the first one; symbol should remain because second still uses it
     deployer.undeploy(r1.id);
@@ -172,8 +172,8 @@ describe('StrategyDeployer', () => {
       1,
     );
 
-    const r1 = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'a' });
-    deployer.deploy({ symbol: '035720', spec: thresholdSpec, name: 'b' });
+    const r1 = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'a' });
+    deployer.deploy({ symbol: '035720', spec: tsmomSpec, name: 'b' });
 
     deployer.undeploy(r1.id);
 
@@ -193,8 +193,8 @@ describe('StrategyDeployer', () => {
     );
 
     const recordsToRestore = [
-      { id: 5, symbol: '005930', name: 'a', spec: thresholdSpec },
-      { id: 7, symbol: '035720', name: 'b', spec: thresholdSpec },
+      { id: 5, symbol: '005930', name: 'a', spec: tsmomSpec },
+      { id: 7, symbol: '035720', name: 'b', spec: tsmomSpec },
     ];
 
     deployer.restore(recordsToRestore);
@@ -217,12 +217,12 @@ describe('StrategyDeployer', () => {
     );
 
     deployer.restore([
-      { id: 10, symbol: '005930', name: 'a', spec: thresholdSpec },
-      { id: 15, symbol: '035720', name: 'b', spec: thresholdSpec },
+      { id: 10, symbol: '005930', name: 'a', spec: tsmomSpec },
+      { id: 15, symbol: '035720', name: 'b', spec: tsmomSpec },
     ]);
 
     // Next deploy should use id 16 (max+1)
-    const next = deployer.deploy({ symbol: '000660', spec: thresholdSpec, name: 'c' });
+    const next = deployer.deploy({ symbol: '000660', spec: tsmomSpec, name: 'c' });
     expect(next.id).toBe(16);
   });
 
@@ -236,7 +236,7 @@ describe('StrategyDeployer', () => {
     expect(deployer.records()).toEqual([]);
 
     // startId still honored
-    const next = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'a' });
+    const next = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'a' });
     expect(next.id).toBe(5);
   });
 
@@ -247,11 +247,11 @@ describe('StrategyDeployer', () => {
     );
 
     deployer.restore([
-      { id: 3, symbol: '005930', name: 'a', spec: thresholdSpec },
+      { id: 3, symbol: '005930', name: 'a', spec: tsmomSpec },
     ]);
 
     // max(startId=20, maxRecordId+1=4) = 20
-    const next = deployer.deploy({ symbol: '000660', spec: thresholdSpec, name: 'b' });
+    const next = deployer.deploy({ symbol: '000660', spec: tsmomSpec, name: 'b' });
     expect(next.id).toBe(20);
   });
 
@@ -274,7 +274,7 @@ describe('StrategyDeployer', () => {
     registry.register(staticStrategy, 'static-strategy', 'LIVE');
 
     // Deploy a dynamic strategy on the same symbol
-    const dynamicRecord = deployer.deploy({ symbol: '005930', spec: thresholdSpec, name: 'dynamic' });
+    const dynamicRecord = deployer.deploy({ symbol: '005930', spec: tsmomSpec, name: 'dynamic' });
 
     // Undeploy the dynamic strategy
     deployer.undeploy(dynamicRecord.id);

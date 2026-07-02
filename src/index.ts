@@ -15,8 +15,7 @@ import { InMemoryTradeTracker } from './risk/TradeTracker.js';
 import { OrderManager } from './order/OrderManager.js';
 import { ReconciliationService } from './order/ReconciliationService.js';
 import { StrategyEngine } from './strategy/StrategyEngine.js';
-import { ThresholdStrategy } from './strategy/ThresholdStrategy.js';
-import { MovingAverageCrossStrategy } from './strategy/MovingAverageCrossStrategy.js';
+import { TimeSeriesMomentumStrategy } from './strategy/TimeSeriesMomentumStrategy.js';
 import { StrategyRegistry } from './strategy/StrategyRegistry.js';
 import type { Strategy } from './strategy/Strategy.js';
 import { InMemoryEventLogger } from './observability/EventLogger.js';
@@ -97,15 +96,15 @@ export function bootstrap() {
     onError: (err) => logger.log({ type: 'ENGINE_ERROR', message: String(err), at: Date.now() }),
   });
 
-  // Sample strategy — replace with DB-loaded strategies.
+  // Seeded AQR TSMOM strategies — replace with DB-loaded strategies.
   const strategies: Strategy[] = [
-    new ThresholdStrategy({
+    new TimeSeriesMomentumStrategy({
       id: 1, symbol: '005930', currency: 'KRW', mode: 'PAPER',
-      buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000,
+      lookback: 20, orderNotional: 1_000_000,
     }),
-    new MovingAverageCrossStrategy({
+    new TimeSeriesMomentumStrategy({
       id: 2, symbol: '000660', currency: 'KRW', mode: 'PAPER',
-      fastPeriod: 5, slowPeriod: 20, orderNotional: 1_000_000,
+      lookback: 20, orderNotional: 1_000_000,
     }),
   ];
   for (const s of strategies) {

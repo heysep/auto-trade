@@ -1,7 +1,6 @@
 import type { Currency, TradingMode } from '../domain/types.js';
 import type { Strategy } from './Strategy.js';
-import { ThresholdStrategy } from './ThresholdStrategy.js';
-import { MovingAverageCrossStrategy } from './MovingAverageCrossStrategy.js';
+import { TimeSeriesMomentumStrategy } from './TimeSeriesMomentumStrategy.js';
 import { CompositeStrategy } from './CompositeStrategy.js';
 
 /**
@@ -9,8 +8,7 @@ import { CompositeStrategy } from './CompositeStrategy.js';
  * known strategy types. Composite specs recursively contain child specs.
  */
 export type StrategySpec =
-  | { type: 'threshold'; params: { buyBelow: number; sellAbove: number; orderNotional: number } }
-  | { type: 'sma'; params: { fastPeriod: number; slowPeriod: number; orderNotional: number } }
+  | { type: 'tsmom'; params: { lookback: number; threshold?: number; orderNotional: number } }
   | { type: 'composite'; combine: 'AND' | 'OR'; a: StrategySpec; b: StrategySpec; orderNotional: number };
 
 /**
@@ -24,26 +22,14 @@ export function buildStrategy(
   mode: TradingMode,
   spec: StrategySpec,
 ): Strategy {
-  if (spec.type === 'threshold') {
-    return new ThresholdStrategy({
+  if (spec.type === 'tsmom') {
+    return new TimeSeriesMomentumStrategy({
       id,
       symbol,
       currency,
       mode,
-      buyBelow: spec.params.buyBelow,
-      sellAbove: spec.params.sellAbove,
-      orderNotional: spec.params.orderNotional,
-    });
-  }
-
-  if (spec.type === 'sma') {
-    return new MovingAverageCrossStrategy({
-      id,
-      symbol,
-      currency,
-      mode,
-      fastPeriod: spec.params.fastPeriod,
-      slowPeriod: spec.params.slowPeriod,
+      lookback: spec.params.lookback,
+      ...(spec.params.threshold !== undefined ? { threshold: spec.params.threshold } : {}),
       orderNotional: spec.params.orderNotional,
     });
   }

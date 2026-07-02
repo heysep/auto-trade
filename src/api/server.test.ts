@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildServer, type ServerOptions } from './server.js';
 import { TradingSystem } from '../app/TradingSystem.js';
 import { StrategyRegistry } from '../strategy/StrategyRegistry.js';
-import { ThresholdStrategy } from '../strategy/ThresholdStrategy.js';
+import { TimeSeriesMomentumStrategy } from '../strategy/TimeSeriesMomentumStrategy.js';
 import { InMemoryRepository } from '../persistence/repository.js';
 import { QuoteBook } from '../market/PriceSource.js';
 import { InMemoryEventLogger } from '../observability/EventLogger.js';
@@ -36,10 +36,10 @@ function harness(opts: {
   const logger = new InMemoryEventLogger();
   const haltSwitch = new HaltSwitch();
 
-  registry.register(new ThresholdStrategy({
+  registry.register(new TimeSeriesMomentumStrategy({
     id: 1, symbol: '005930', currency: 'KRW', mode: 'PAPER',
-    buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000,
-  }), 'dip-buyer');
+    lookback: 20, orderNotional: 1_000_000,
+  }), 'tsmom-flagship');
 
   book.set({ symbol: '005930', currency: 'KRW', bid: 70_000, ask: 70_100, last: 70_050, ts: 0 } as Quote);
   repo.upsertPosition({ strategyId: 1, symbol: '005930', mode: 'PAPER', quantity: 10, avgPrice: 70_000, realizedPnl: 0 } as Position);
@@ -236,19 +236,23 @@ describe('HTTP API', () => {
   });
 
   describe('backtest', () => {
-    // Rising-then-falling series: price below buyBelow triggers BUY on bar 0 (filled bar 1),
-    // then price above sellAbove triggers SELL on bar 2 (filled bar 3) → tradeCount = 1.
-    // Timestamps chosen so Date.parse(t)/1000 = 1000, 2000, 3000, 4000 (epoch seconds).
+    // TSMOM lookback=2 requires 3 warmup bars then buy signal + fill + sell signal + fill.
+    // Bar 1 (60000): NEUTRAL  Bar 2 (60000): NEUTRAL  Bar 3 (85000): BULLISH→BUY queued
+    // Bar 4 (85000): BUY fills; BULLISH, null   Bar 5 (40000): BEARISH→SELL queued
+    // Bar 6 (40000): SELL fills → tradeCount = 1
+    // Timestamps: Date.parse(t)/1000 = 1000..6000 (epoch seconds).
     const BT_CANDLES: TossCandle[] = [
       { timestamp: '1970-01-01T00:16:40.000Z', openPrice: '60000', highPrice: '61000', lowPrice: '59000', closePrice: '60000' },
       { timestamp: '1970-01-01T00:33:20.000Z', openPrice: '60000', highPrice: '61000', lowPrice: '59000', closePrice: '60000' },
       { timestamp: '1970-01-01T00:50:00.000Z', openPrice: '85000', highPrice: '86000', lowPrice: '84000', closePrice: '85000' },
       { timestamp: '1970-01-01T01:06:40.000Z', openPrice: '85000', highPrice: '86000', lowPrice: '84000', closePrice: '85000' },
+      { timestamp: '1970-01-01T01:23:20.000Z', openPrice: '40000', highPrice: '41000', lowPrice: '39000', closePrice: '40000' },
+      { timestamp: '1970-01-01T01:40:00.000Z', openPrice: '40000', highPrice: '41000', lowPrice: '39000', closePrice: '40000' },
     ];
 
     const SPEC = {
-      type: 'threshold' as const,
-      params: { buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000 },
+      type: 'tsmom' as const,
+      params: { lookback: 2, orderNotional: 1_000_000 },
     };
 
     function btHarness() {
@@ -293,9 +297,9 @@ describe('HTTP API', () => {
   });
 
   describe('dynamic strategy deploy / undeploy', () => {
-    const THRESHOLD_SPEC = {
-      type: 'threshold' as const,
-      params: { buyBelow: 65_000, sellAbove: 75_000, orderNotional: 500_000 },
+    const TSMOM_SPEC = {
+      type: 'tsmom' as const,
+      params: { lookback: 10, orderNotional: 500_000 },
     };
 
     it('POST /api/strategies deploys a strategy (201) and it appears in GET /api/strategies', async () => {
@@ -303,7 +307,7 @@ describe('HTTP API', () => {
 
       const post = await app.inject({
         method: 'POST', url: '/api/strategies',
-        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'dynamic-dip' },
+        payload: { symbol: '035720', spec: TSMOM_SPEC, name: 'dynamic-dip' },
       });
       expect(post.statusCode).toBe(201);
       const view = post.json<StrategyView>();
@@ -320,7 +324,7 @@ describe('HTTP API', () => {
 
       const post = await app.inject({
         method: 'POST', url: '/api/strategies',
-        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'to-remove' },
+        payload: { symbol: '035720', spec: TSMOM_SPEC, name: 'to-remove' },
       });
       expect(post.statusCode).toBe(201);
       const { id } = post.json<StrategyView>();
@@ -345,7 +349,7 @@ describe('HTTP API', () => {
       const { app } = harness();  // no deployer
       const res = await app.inject({
         method: 'POST', url: '/api/strategies',
-        payload: { symbol: '035720', spec: THRESHOLD_SPEC, name: 'wont-work' },
+        payload: { symbol: '035720', spec: TSMOM_SPEC, name: 'wont-work' },
       });
       expect(res.statusCode).toBe(400);
       expect(res.json<{ error: string }>().error).toMatch(/deployer/);

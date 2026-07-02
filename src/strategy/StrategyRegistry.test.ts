@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { StrategyRegistry } from './StrategyRegistry.js';
-import { ThresholdStrategy } from './ThresholdStrategy.js';
+import { TimeSeriesMomentumStrategy } from './TimeSeriesMomentumStrategy.js';
 
-const strat = (id: number) => new ThresholdStrategy({
+const strat = (id: number) => new TimeSeriesMomentumStrategy({
   id, symbol: '005930', currency: 'KRW', mode: 'PAPER',
-  buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000,
+  lookback: 20, orderNotional: 1_000_000,
 });
 
 describe('StrategyRegistry', () => {

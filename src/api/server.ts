@@ -342,8 +342,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
         <span class="blabel">A</span>
         <select id="type-a">
           <option value="">전략 없음</option>
-          <option value="threshold">임계값 Threshold</option>
-          <option value="sma">이동평균 SMA</option>
+          <option value="tsmom">시계열 모멘텀(TSMOM)</option>
         </select>
       </div>
       <div id="params-a" class="params-wrap" style="display:none"></div>
@@ -359,8 +358,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
         <span class="blabel">B</span>
         <select id="type-b">
           <option value="">전략 없음</option>
-          <option value="threshold">임계값 Threshold</option>
-          <option value="sma">이동평균 SMA</option>
+          <option value="tsmom">시계열 모멘텀(TSMOM)</option>
         </select>
       </div>
       <div id="params-b" class="params-wrap" style="display:none"></div>
@@ -610,13 +608,9 @@ searchSymbols('');
 
 /* ---- Strategy builder ---- */
 function paramFields(type, prefix) {
-  if (type === 'threshold') {
-    return '<label>매수↓</label><input type="number" id="' + prefix + '-buy" value="70000" step="1000">' +
-           '<label>매도↑</label><input type="number" id="' + prefix + '-sell" value="80000" step="1000">';
-  }
-  if (type === 'sma') {
-    return '<label>단기</label><input type="number" id="' + prefix + '-fast" value="5" min="1" step="1">' +
-           '<label>장기</label><input type="number" id="' + prefix + '-slow" value="20" min="1" step="1">';
+  if (type === 'tsmom') {
+    return '<label>룩백</label><input type="number" id="' + prefix + '-lookback" value="20" min="1" step="1">' +
+           '<label>임계%</label><input type="number" id="' + prefix + '-thresh" value="0" min="0" step="0.1">';
   }
   return '';
 }
@@ -662,11 +656,11 @@ function getNum(id, fallback) {
 }
 
 function buildSingleSpec(type, prefix, notional) {
-  if (type === 'threshold') {
-    return { type: 'threshold', params: { buyBelow: getNum('#' + prefix + '-buy', 70000), sellAbove: getNum('#' + prefix + '-sell', 80000), orderNotional: notional } };
-  }
-  if (type === 'sma') {
-    return { type: 'sma', params: { fastPeriod: getNum('#' + prefix + '-fast', 5), slowPeriod: getNum('#' + prefix + '-slow', 20), orderNotional: notional } };
+  if (type === 'tsmom') {
+    var lookback = Math.max(1, Math.round(getNum('#' + prefix + '-lookback', 20)));
+    var threshPct = Number($('#' + prefix + '-thresh').value);
+    var thresh = isFinite(threshPct) && threshPct >= 0 ? threshPct / 100 : 0;
+    return { type: 'tsmom', params: { lookback: lookback, threshold: thresh, orderNotional: notional } };
   }
   return null;
 }
