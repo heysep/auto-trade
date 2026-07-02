@@ -133,7 +133,7 @@ export class FactorModel {
 
     const defensiveRaw = zVol.map((zv, i) => {
       const zm = zMdd[i] ?? 0;
-      return (-zv + -zm) / 2;
+      return (-zv + zm) / 2;
     });
     const defensiveScore = sectorNeutralize(defensiveRaw, sectors);
 

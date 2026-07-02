@@ -74,6 +74,7 @@ export class FactorBacktestService {
   private readonly historyBars: number;
 
   private cache: MatrixCache | undefined;
+  private inflight: Promise<MatrixCache> | undefined;
 
   constructor(deps: FactorBacktestServiceDeps) {
     this.universe = deps.universe;
@@ -108,7 +109,10 @@ export class FactorBacktestService {
     };
   }
 
-  /** Build (or return cached) BacktestSymbol[] matrix. */
+  /**
+   * Return (or build) the BacktestSymbol[] matrix.
+   * Concurrent cold-cache calls join a single in-flight rebuild (thundering-herd guard).
+   */
   private async getMatrix(): Promise<MatrixCache> {
     const now = this.now();
 
@@ -117,6 +121,23 @@ export class FactorBacktestService {
       return this.cache;
     }
 
+    // In-flight dedup: join the pending rebuild instead of starting a new one.
+    if (this.inflight !== undefined) {
+      return this.inflight;
+    }
+
+    // Start rebuild; store the promise synchronously so concurrent callers join it.
+    this.inflight = this.buildMatrix(now);
+    try {
+      const entry = await this.inflight;
+      this.cache = entry;
+      return entry;
+    } finally {
+      this.inflight = undefined;
+    }
+  }
+
+  private async buildMatrix(now: number): Promise<MatrixCache> {
     const stocks = await this.universe();
     const universeSize = stocks.length;
 
@@ -160,8 +181,6 @@ export class FactorBacktestService {
       }
     }
 
-    const entry: MatrixCache = { matrix, asOf: now, universeSize, fetched, skipped };
-    this.cache = entry;
-    return entry;
+    return { matrix, asOf: now, universeSize, fetched, skipped };
   }
 }

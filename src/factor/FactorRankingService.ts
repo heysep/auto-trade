@@ -44,6 +44,7 @@ export class FactorRankingService {
   private readonly candleCount: number;
 
   private cache: RankingResult | undefined;
+  private inflight: Promise<RankingResult> | undefined;
 
   constructor(deps: FactorRankingDeps) {
     this.universe = deps.universe;
@@ -57,6 +58,7 @@ export class FactorRankingService {
   /**
    * Return the full (or sliced) factor ranking.
    * Cached result is reused when `now() - asOf < ttlMs`.
+   * Concurrent cold-cache calls join a single in-flight rebuild (thundering-herd guard).
    * `limit` only slices the returned `scored` array — universe/fetched/skipped
    * always reflect the full computation.
    */
@@ -68,7 +70,24 @@ export class FactorRankingService {
       return this.slice(this.cache, limit);
     }
 
-    // Cache miss or expired: rebuild
+    // In-flight dedup: join the pending rebuild instead of starting a new one.
+    if (this.inflight !== undefined) {
+      const result = await this.inflight;
+      return this.slice(result, limit);
+    }
+
+    // Start rebuild; store the promise synchronously so concurrent callers join it.
+    this.inflight = this.buildRanking(now);
+    try {
+      const result = await this.inflight;
+      this.cache = result;
+      return this.slice(result, limit);
+    } finally {
+      this.inflight = undefined;
+    }
+  }
+
+  private async buildRanking(now: number): Promise<RankingResult> {
     const stocks = await this.universe();
     const universeSize = stocks.length;
 
@@ -118,17 +137,7 @@ export class FactorRankingService {
     }
 
     const scored = this.model.score(entries);
-
-    const result: RankingResult = {
-      asOf: now,
-      scored,
-      universeSize,
-      fetched,
-      skipped,
-    };
-
-    this.cache = result;
-    return this.slice(result, limit);
+    return { asOf: now, scored, universeSize, fetched, skipped };
   }
 
   private slice(result: RankingResult, limit: number | undefined): RankingResult {

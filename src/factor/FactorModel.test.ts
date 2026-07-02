@@ -214,6 +214,54 @@ describe('FactorModel.score — multi-sector universe', () => {
   });
 });
 
+// ── NEW: defensive drawdown sign regression test ──────────────────────────────
+describe('FactorModel.score — defensive factor: shallower MDD scores higher', () => {
+  // Custom periods: volWindow=2 (only last 2 returns) keeps vol window
+  // out of the mid-series trough; mddWindow=5 captures the trough.
+  // momLong=5, momMid=3 → needs n > 5, so we use n=8.
+  const DEF_PERIODS: FactorPeriods = {
+    momSkip: 1,
+    momLong: 5,
+    momMid: 3,
+    volWindow: 2,
+    mddWindow: 5,
+  };
+
+  // All three share prices[5..7] = [121, 122, 123] → identical last-2 returns → same vol.
+  // Different troughs at prices[4] give clearly different MDD values:
+  //   SHALLOW: prices[4]=120 → mdd window [115,120,121,122,123] → mdd ≈ 0
+  //   NEUTRAL: prices[4]= 90 → mdd window [115, 90,121,122,123] → mdd ≈ −21.7%
+  //   DEEP:    prices[4]= 60 → mdd window [115, 60,121,122,123] → mdd ≈ −47.8%
+  //
+  // With n=2 symbols, winsorize clips both values to the minimum, collapsing z-scores
+  // to 0. Three symbols ensures distinct z-scores so the sign bug is observable.
+  const SHALLOW_PRICES = [100, 105, 110, 115, 120, 121, 122, 123];
+  const NEUTRAL_PRICES = [100, 105, 110, 115,  90, 121, 122, 123];
+  const DEEP_PRICES    = [100, 105, 110, 115,  60, 121, 122, 123];
+
+  const shallowEntry: UniverseEntry = { symbol: 'SHALLOW', sector: 'TEST', prices: SHALLOW_PRICES };
+  const neutralEntry: UniverseEntry = { symbol: 'NEUTRAL', sector: 'TEST', prices: NEUTRAL_PRICES };
+  const deepEntry: UniverseEntry    = { symbol: 'DEEP',    sector: 'TEST', prices: DEEP_PRICES    };
+
+  it('shallower-drawdown symbol has a higher defensive score than deeper-drawdown symbol', () => {
+    const model = new FactorModel(DEFAULT_WEIGHTS, DEF_PERIODS);
+    const results = model.score([shallowEntry, neutralEntry, deepEntry]);
+
+    const shallow = results.find((r) => r.symbol === 'SHALLOW');
+    const deep    = results.find((r) => r.symbol === 'DEEP');
+
+    expect(shallow).toBeDefined();
+    expect(deep).toBeDefined();
+    expect(shallow!.factors.defensive).toBeDefined();
+    expect(deep!.factors.defensive).toBeDefined();
+
+    // Shallower MDD (≈ 0) must score strictly higher than deeper MDD (≈ −48%).
+    // FAILS before fix (bug rewards deep drawdowns, scoring SHALLOW < DEEP).
+    // PASSES after fix (drop −zm → +zm correctly rewards shallow drawdowns).
+    expect(shallow!.factors.defensive).toBeGreaterThan(deep!.factors.defensive!);
+  });
+});
+
 describe('FactorModel constructor defaults', () => {
   it('accepts no arguments and uses defaults', () => {
     const model = new FactorModel();

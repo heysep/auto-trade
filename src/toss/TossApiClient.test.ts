@@ -329,6 +329,57 @@ describe('TossApiClient 429 retry', () => {
     expect(instantSleep).toHaveBeenCalledTimes(maxRetries);
   });
 
+  it('clamps large Retry-After (e.g. 3600 s) to RETRY_DELAY_CAP_MS (≤ 30 000 ms)', async () => {
+    const delays: number[] = [];
+    const sleep = vi.fn(async (ms: number) => { delays.push(ms); });
+    const client = new TossApiClient(fakeTokens, { sleep, maxRetries: 4 });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      if (callCount === 1) {
+        return makeResponse(429, undefined, { 'retry-after': '3600' });
+      }
+      return makeResponse(200, { result: successPage });
+    });
+
+    await client.getCandles('005930', '1d', 1);
+
+    expect(callCount).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    // Without cap this would be 3_600_000 ms; with cap it must be ≤ 30_000 ms.
+    expect(delays[0]).toBeLessThanOrEqual(30_000);
+    expect(delays[0]).toBeGreaterThan(0);
+  });
+
+  it('falls back to finite exponential backoff when Retry-After is a non-numeric HTTP date', async () => {
+    const delays: number[] = [];
+    const sleep = vi.fn(async (ms: number) => { delays.push(ms); });
+    const client = new TossApiClient(fakeTokens, { sleep, maxRetries: 4 });
+
+    let callCount = 0;
+    vi.stubGlobal('fetch', async () => {
+      callCount++;
+      if (callCount === 1) {
+        // HTTP-date string → Number(...) = NaN
+        return makeResponse(429, undefined, {
+          'retry-after': 'Wed, 01 Jan 2026 00:00:00 GMT',
+        });
+      }
+      return makeResponse(200, { result: successPage });
+    });
+
+    await client.getCandles('005930', '1d', 1);
+
+    expect(callCount).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    // Before fix: sleep(NaN) is called (immediate tight retry — bad).
+    // After fix: finite exponential backoff > 0.
+    const delay = delays[0]!;
+    expect(Number.isFinite(delay)).toBe(true);
+    expect(delay).toBeGreaterThan(0);
+  });
+
   it('does NOT retry on non-429 errors (exactly one fetch call)', async () => {
     const instantSleep = vi.fn().mockResolvedValue(undefined);
     const client = new TossApiClient(fakeTokens, { sleep: instantSleep, maxRetries: 4 });

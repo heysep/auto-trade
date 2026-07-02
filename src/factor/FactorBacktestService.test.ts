@@ -182,4 +182,72 @@ describe('FactorBacktestService', () => {
       expect(report.fetched).toBe(3);
     });
   });
+
+  describe('in-flight dedup (thundering herd)', () => {
+    it('two concurrent cold-cache run() calls fetch each symbol exactly once', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const svc = new FactorBacktestService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => 0,
+        ttlMs: 60_000,
+      });
+
+      // Fire two concurrent cold-cache calls.
+      const [r1, r2] = await Promise.all([svc.run(), svc.run()]);
+
+      // 4 symbols — without dedup both calls fetch 4 each = 8 total.
+      // With dedup the second call awaits the first: total = 4.
+      expect(fetchCount).toBe(UNIVERSE.length);
+      expect(Array.isArray(r1.result.equityCurve)).toBe(true);
+      expect(Array.isArray(r2.result.equityCurve)).toBe(true);
+    });
+
+    it('a call after the in-flight settles still serves from TTL cache', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const svc = new FactorBacktestService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs: 60_000,
+      });
+
+      // Prime with concurrent calls.
+      await Promise.all([svc.run(), svc.run()]);
+      expect(fetchCount).toBe(UNIVERSE.length);
+
+      // A subsequent call within TTL must NOT trigger new fetches.
+      fetchCount = 0;
+      now = 1_000;
+      await svc.run();
+      expect(fetchCount).toBe(0);
+    });
+  });
 });

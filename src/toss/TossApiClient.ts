@@ -17,6 +17,7 @@ const PREFIX = '/api/v1';
 
 const DEFAULT_MAX_RETRIES = 4;
 const BACKOFF_BASE_MS = 400;
+const RETRY_DELAY_CAP_MS = 30_000;
 
 export class TossApiClient {
   private readonly sleep: (ms: number) => Promise<void>;
@@ -47,10 +48,15 @@ export class TossApiClient {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (attempt > 0) {
-        // Back off before retrying: use Retry-After if provided, else exponential backoff.
-        const delayMs = lastRateLimitError?.retryAfterSec !== undefined
-          ? lastRateLimitError.retryAfterSec * 1000
+        // Back off before retrying: use Retry-After if provided and finite (guards NaN
+        // from HTTP-date strings like "Wed, 01 Jan 2026 00:00:00 GMT"), else exponential
+        // backoff. Cap to RETRY_DELAY_CAP_MS so a large Retry-After (e.g. 3600 s) cannot
+        // stall the sequential universe build for hours.
+        const ra = lastRateLimitError?.retryAfterSec;
+        const base = (ra !== undefined && Number.isFinite(ra))
+          ? ra * 1000
           : BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
+        const delayMs = Math.min(base, RETRY_DELAY_CAP_MS);
         await this.sleep(delayMs);
       }
 

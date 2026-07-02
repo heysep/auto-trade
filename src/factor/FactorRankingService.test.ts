@@ -397,4 +397,72 @@ describe('FactorRankingService', () => {
       expect(result.asOf).toBe(now);
     });
   });
+
+  describe('in-flight dedup (thundering herd)', () => {
+    it('two concurrent cold-cache rank() calls fetch each symbol exactly once', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => 0,
+        ttlMs: 60_000,
+      });
+
+      // Fire two concurrent cold-cache calls.
+      const [r1, r2] = await Promise.all([service.rank(), service.rank()]);
+
+      // 3 symbols — without dedup, both calls would fetch 3 each = 6 total.
+      // With dedup, the second call awaits the first's in-flight promise: total = 3.
+      expect(fetchCount).toBe(UNIVERSE.length);
+      expect(r1.scored).toHaveLength(3);
+      expect(r2.scored).toHaveLength(3);
+    });
+
+    it('a call after the in-flight settles still serves from TTL cache', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs: 60_000,
+      });
+
+      // Prime with concurrent calls (should only fetch 3 total).
+      await Promise.all([service.rank(), service.rank()]);
+      expect(fetchCount).toBe(UNIVERSE.length);
+
+      // A subsequent call within TTL must NOT trigger new fetches.
+      fetchCount = 0;
+      now = 1_000; // still fresh
+      await service.rank();
+      expect(fetchCount).toBe(0);
+    });
+  });
 });
