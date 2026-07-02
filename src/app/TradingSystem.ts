@@ -254,17 +254,22 @@ export class TradingSystem {
       return { error: 'price fetch failed', code: 502 };
     }
 
-    // Populate QuoteBook so FactorPortfolioManager.priceOf can find them
+    // Populate QuoteBook so FactorPortfolioManager.priceOf can find them.
+    // Skip symbols that already have a fresh worker quote — the synthetic zero-spread
+    // quote must not clobber real bid/ask that tick-driven strategies read (review M7).
+    const FRESH_MS = 10_000;
     for (const item of items) {
       const last = Number(item.lastPrice);
       if (!Number.isFinite(last) || last <= 0) continue;
+      const existing = this.deps.book.getQuote(item.symbol);
+      if (existing && this.now() - existing.ts < FRESH_MS) continue;
       this.deps.book.set({
         symbol: item.symbol,
         currency: 'KRW',
         bid: last,
         ask: last,
         last,
-        ts: Date.now(),
+        ts: this.now(),
       });
     }
 

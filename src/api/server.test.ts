@@ -61,7 +61,9 @@ function harness(opts: {
     lookback: 20, orderNotional: 1_000_000,
   }), 'tsmom-flagship');
 
-  book.set({ symbol: '005930', currency: 'KRW', bid: 70_000, ask: 70_100, last: 70_050, ts: 0 } as Quote);
+  // ts is 60s in the past relative to the injected now()=0 — a STALE quote, so the
+  // rebalance price prefetch may overwrite it (fresh quotes are preserved; see M7 test).
+  book.set({ symbol: '005930', currency: 'KRW', bid: 70_000, ask: 70_100, last: 70_050, ts: -60_000 } as Quote);
   repo.upsertPosition({ strategyId: 1, symbol: '005930', mode: 'PAPER', quantity: 10, avgPrice: 70_000, realizedPnl: 0 } as Position);
   repo.saveOrder({ id: 'o1', strategyId: 1, symbol: '005930', currency: 'KRW', side: 'BUY', orderType: 'MARKET', quantity: 10, status: 'FILLED', mode: 'PAPER', idempotencyKey: 'o1', createdAt: 0 } as Order);
 
@@ -726,6 +728,36 @@ describe('POST /api/factors/rebalance', () => {
       expect(qRes.statusCode).toBe(200);
       expect(qRes.json().last).toBe(75000);
     }
+  });
+
+  it('does NOT clobber a fresh worker quote with the synthetic prefetch (M7)', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices: makeGetPrices('75000'),
+      factorPortfolioTopN: 2,
+    });
+    // Fresh real quote for 005930 (ts equals the injected now()=0 → 0ms old): must survive.
+    book.set({ symbol: '005930', currency: 'KRW', bid: 70_900, ask: 71_100, last: 71_000, ts: 0 } as Quote);
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    const plan = res.json() as RebalancePlan;
+    const p5930 = plan.targets.find((t) => t.symbol === '005930');
+    const p0660 = plan.targets.find((t) => t.symbol === '000660');
+    expect(p5930?.price).toBe(71_000);            // fresh quote preserved (spread intact)
+    expect(book.getQuote('005930')?.ask).toBe(71_100);
+    expect(p0660?.price).toBe(75_000);            // no quote → prefetch fills it
   });
 });
 
