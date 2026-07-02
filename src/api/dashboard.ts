@@ -379,18 +379,8 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
   <header id="topbar">
     <span id="topbar-title">Dashboard</span>
     <div class="topbar-right">
-      <div class="mkt-ticker">
-        <div class="mkt-item">
-          <span class="mkt-dot" style="background:var(--bull)"></span>
-          <span style="color:var(--muted)">KOSPI</span>
-          <span style="font-weight:600">2,847.12</span>
-          <span style="color:var(--bull)">+0.42%</span>
-        </div>
-        <div class="mkt-item">
-          <span style="color:var(--muted)">KOSDAQ</span>
-          <span style="font-weight:600">876.54</span>
-          <span style="color:var(--bear)">&minus;0.18%</span>
-        </div>
+      <div class="mkt-ticker" id="mkt-ticker">
+        <div class="mkt-item"><span class="mkt-dot" style="background:var(--muted)"></span><span style="color:var(--muted)">시세 대기</span></div>
       </div>
       <div class="tb-div"></div>
       <button class="btn btn-danger" id="halt-btn" style="font-size:11px;padding:4px 10px;font-family:ui-monospace,SFMono-Regular,monospace;font-weight:700">&#x23FB; HALT</button>
@@ -1295,12 +1285,32 @@ function refreshOrders() {
   }).catch(function() {});
 }
 
+// Topbar ticker: live quotes for the seeded symbols from the in-memory QuoteBook (cheap).
+var TICKER_SYMBOLS = [{ sym: '005930', label: '삼성전자' }, { sym: '000660', label: 'SK하이닉스' }];
+function refreshTicker() {
+  jfetch('/api/market/prices?symbols=' + TICKER_SYMBOLS.map(function(t) { return t.sym; }).join(',')).then(function(quotes) {
+    var el = document.getElementById('mkt-ticker');
+    if (!el) return;
+    var bySym = {};
+    (quotes || []).forEach(function(q) { if (q && q.symbol) bySym[q.symbol] = q; });
+    var html = '';
+    TICKER_SYMBOLS.forEach(function(t) {
+      var q = bySym[t.sym];
+      if (!q || q.last == null) return;
+      html += '<div class="mkt-item"><span class="mkt-dot" style="background:var(--bull)"></span>'
+        + '<span style="color:var(--muted)">' + esc(t.label) + '</span>'
+        + '<span style="font-weight:600">' + esc(Number(q.last).toLocaleString()) + '</span></div>';
+    });
+    el.innerHTML = html || '<div class="mkt-item"><span class="mkt-dot" style="background:var(--muted)"></span><span style="color:var(--muted)">시세 대기 (장 마감)</span></div>';
+  }).catch(function() {});
+}
 function refreshAll() {
   refreshHalt();
   refreshStrategies();
   refreshPositions();
   refreshLogs();
   refreshOrders();
+  refreshTicker();
 }
 refreshAll();
 setInterval(refreshAll, 3000);
@@ -1719,10 +1729,10 @@ function applyAutoRebalanceStatus(data) {
       var hrs = Math.round(Number(data.intervalMs) / 3600000);
       parts.push('간격 ' + esc(String(hrs)) + 'h');
     }
-    if (data.lastRun != null) {
-      var d = new Date(data.lastRun);
+    if (data.lastRun && data.lastRun.at != null) {
+      var d = new Date(data.lastRun.at);
       var ds = d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-      var note = data.lastSkipped ? 'skip' : 'ok';
+      var note = data.lastRun.ok ? 'ok' : (data.lastRun.note || 'skip');
       parts.push('최근 ' + esc(ds) + ' (' + esc(note) + ')');
     }
     caption.textContent = parts.join(' · ');

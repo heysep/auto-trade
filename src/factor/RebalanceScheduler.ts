@@ -51,6 +51,7 @@ export class RebalanceScheduler {
   }
 
   async tick(): Promise<void> {
+    if (this._inFlight) return;  // overlap guard first — an in-flight run's lastRun must not be overwritten
     if (this.deps.isHalted()) {
       this._lastRun = { at: this._now(), ok: false, note: 'halted' };
       return;
@@ -59,7 +60,6 @@ export class RebalanceScheduler {
       this._lastRun = { at: this._now(), ok: false, note: 'not a trading day' };
       return;
     }
-    if (this._inFlight) return;  // overlap guard — do not update lastRun
 
     this._inFlight = true;
     try {
