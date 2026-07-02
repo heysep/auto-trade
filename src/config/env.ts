@@ -37,5 +37,10 @@ export const config = {
     // Refresh token lifetime margin: re-issue this many seconds before expiry.
     tokenRefreshMarginSec: 60,
   },
+  dart: {
+    // Optional — app boots without it; DART features gate on apiKey being non-empty.
+    apiKey: process.env.DART_API_KEY ?? '',
+    baseUrl: 'https://opendart.fss.or.kr',
+  },
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://localhost:5432/auto_trading',
 } as const;
