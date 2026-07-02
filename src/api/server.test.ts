@@ -618,6 +618,8 @@ describe('POST /api/factors/rebalance', () => {
     expect(plan.targets).toHaveLength(2);
     expect(plan.targets[0]?.price).toBe(70000);
     expect(plan.targets[0]?.targetQty).toBe(Math.floor(5_000_000 / 70000));
+    expect(plan.targets[1]?.price).toBe(70000);
+    expect(plan.targets[1]?.targetQty).toBe(Math.floor(5_000_000 / 70000));
     expect(Array.isArray(plan.ordersSubmitted)).toBe(true);
     expect(Array.isArray(plan.skipped)).toBe(true);
   });
@@ -652,9 +654,8 @@ describe('POST /api/factors/rebalance', () => {
     // Confirm via GET /api/market/price/:symbol
     for (const sym of SYMBOLS) {
       const qRes = await app.inject({ method: 'GET', url: `/api/market/price/${sym}` });
-      if (qRes.statusCode === 200) {
-        expect(qRes.json().last).toBe(75000);
-      }
+      expect(qRes.statusCode).toBe(200);
+      expect(qRes.json().last).toBe(75000);
     }
   });
 });
