@@ -45,6 +45,19 @@ export class MarketCalendarService {
     return isRegularOpen(cal, this.now());
   }
 
+  /** Synchronous trading-day check using the last-fetched calendar cache.
+   *  Returns false for weekends; returns best-effort true on uncached weekdays.
+   *  Call isMarketOpen() first (e.g. in the data worker) to warm the cache. */
+  isTradingDaySync(market: Market): boolean {
+    const hit = this.cache.get(market);
+    if (hit !== undefined) {
+      return parseSession(hit.cal.today?.integrated?.regularMarket) !== null;
+    }
+    // Cache miss: weekend check only (holidays not detectable without a network call)
+    const day = new Date(this.now()).getDay();
+    return day !== 0 && day !== 6;
+  }
+
   private async calendar(market: Market): Promise<TossMarketCalendar> {
     const hit = this.cache.get(market);
     if (hit && this.now() - hit.fetchedAt < this.cacheMs) return hit.cal;
