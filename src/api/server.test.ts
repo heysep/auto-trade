@@ -110,7 +110,13 @@ describe('HTTP API', () => {
     const res = await app.inject({ method: 'GET', url: '/' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
-    expect(res.body).toContain('auto-trading');
+    expect(res.body).toContain('AutoTrade');
+    expect(res.body).toContain('Dashboard');
+    expect(res.body).toContain('Strategy Lab');
+    expect(res.body).toContain('Portfolio');
+    expect(res.body).toContain('Performance');
+    expect(res.body).toContain('Risk / Halt');
+    expect(res.body).toContain('--sidebar');
     expect(res.body).toContain('긴급 정지');
     expect(res.headers['content-type']).toMatch(/charset=utf-8/);
     expect(res.body).toMatch(/replace\(\/\[&<>/);   // cell() escapes interpolated values (anti-XSS)
