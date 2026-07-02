@@ -21,6 +21,10 @@ import type { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
 import type { RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestReport } from '../factor/FactorBacktestService.js';
+import { FactorPortfolioManager } from '../factor/FactorPortfolioManager.js';
+import type { RebalancePlan } from '../factor/FactorPortfolioManager.js';
+import type { TossPriceItem } from '../toss/types.js';
+import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -36,6 +40,9 @@ function harness(opts: {
   withDeployer?: boolean;
   factorRanking?: FactorRankingService;
   factorBacktest?: FactorBacktestService;
+  factorPortfolio?: FactorPortfolioManager;
+  getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
+  factorPortfolioTopN?: number;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -70,8 +77,11 @@ function harness(opts: {
     ...(deployer ? { deployer } : {}),
     ...(opts.factorRanking !== undefined ? { factorRanking: opts.factorRanking } : {}),
     ...(opts.factorBacktest !== undefined ? { factorBacktest: opts.factorBacktest } : {}),
+    ...(opts.factorPortfolio !== undefined ? { factorPortfolio: opts.factorPortfolio } : {}),
+    ...(opts.getPrices !== undefined ? { getPrices: opts.getPrices } : {}),
+    ...(opts.factorPortfolioTopN !== undefined ? { factorPortfolioTopN: opts.factorPortfolioTopN } : {}),
   });
-  return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer };
+  return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer, book, repo };
 }
 
 describe('HTTP API', () => {
@@ -528,5 +538,123 @@ describe('HTTP API', () => {
       expect(res.statusCode).toBe(400);
       expect(res.json<{ error: string }>().error).toMatch(/startCapital/);
     });
+  });
+});
+
+describe('POST /api/factors/rebalance', () => {
+  const SYMBOLS = ['005930', '000660'];
+
+  /** Minimal duck-typed ranking usable as both FactorRankingService and FactorPortfolioDeps.ranking. */
+  function makeRanking(symbols: string[]) {
+    return {
+      rank: async (_limit?: number) => ({
+        asOf: 0,
+        scored: symbols.map((symbol, i) => ({ symbol, rank: i + 1, composite: 1 - i * 0.1, sector: 'KR', factors: {} })),
+        universeSize: symbols.length,
+        fetched: symbols.length,
+        skipped: 0,
+      }),
+    };
+  }
+
+  function makeGetPrices(price: string) {
+    return async (syms: string[]): Promise<TossPriceItem[]> =>
+      syms.map((symbol) => ({ symbol, lastPrice: price }));
+  }
+
+  it('returns 503 when factorPortfolio dep is absent', async () => {
+    const { app } = harness();
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toMatch(/unavailable/i);
+  });
+
+  it('returns 409 when TradingSystem halt switch is set', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices: makeGetPrices('70000'),
+      factorPortfolioTopN: 2,
+    });
+    haltSwitch.trip('test halt');
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/halt/i);
+  });
+
+  it('returns RebalancePlan with targets/ordersSubmitted/halted:false', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices: makeGetPrices('70000'),
+      factorPortfolioTopN: 2,
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    const plan = res.json() as RebalancePlan;
+    expect(plan.halted).toBe(false);
+    expect(plan.targets).toHaveLength(2);
+    expect(plan.targets[0]?.price).toBe(70000);
+    expect(plan.targets[0]?.targetQty).toBe(Math.floor(5_000_000 / 70000));
+    expect(Array.isArray(plan.ordersSubmitted)).toBe(true);
+    expect(Array.isArray(plan.skipped)).toBe(true);
+  });
+
+  it('sets quotes in QuoteBook (prices visible in targets) before rebalance', async () => {
+    // TradingSystem.rebalanceFactorPortfolio sets quotes in its book dep THEN calls rebalance().
+    // FactorPortfolioManager.priceOf reads from that same book (via closure).
+    // Evidence: plan.targets have price=75000, meaning quotes were populated before rebalance ran.
+    const ranking = makeRanking(SYMBOLS);
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices: makeGetPrices('75000'),
+      factorPortfolioTopN: 2,
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    const plan = res.json() as RebalancePlan;
+    // targets priced at 75000 proves book was populated before rebalance() ran
+    expect(plan.targets.length).toBeGreaterThan(0);
+    expect(plan.targets[0]?.price).toBe(75000);
+    // Confirm via GET /api/market/price/:symbol
+    for (const sym of SYMBOLS) {
+      const qRes = await app.inject({ method: 'GET', url: `/api/market/price/${sym}` });
+      if (qRes.statusCode === 200) {
+        expect(qRes.json().last).toBe(75000);
+      }
+    }
   });
 });
