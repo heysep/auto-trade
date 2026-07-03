@@ -771,6 +771,25 @@ var numCls = function(n) { return Number(n) > 0 ? 'num pos' : Number(n) < 0 ? 'n
 var pct = function(v) { return (Number(v) * 100).toFixed(2) + '%'; };
 var token = function() { return localStorage.getItem('apiToken') || ''; };
 
+/* ---- Symbol name map: populated at boot, used by symLabel/symText ---- */
+var SYM_NAMES = {};
+jfetch('/api/market/symbols?q=&limit=500').then(function(list) {
+  try {
+    if (!Array.isArray(list)) return;
+    list.forEach(function(s) { if (s && s.symbol) SYM_NAMES[s.symbol] = s.name; });
+  } catch (e) {}
+}).catch(function() {});
+// symLabel(sym) → HTML: "삼성전자 <span>005930</span>" or just "005930" — for innerHTML contexts only.
+function symLabel(sym) {
+  var n = SYM_NAMES[sym];
+  return n ? esc(n) + ' <span style="color:var(--muted);font-family:monospace;font-size:11px">' + esc(sym) + '</span>' : esc(sym);
+}
+// symText(sym) → plain text: "삼성전자 (005930)" or "005930" — for textContent / option labels.
+function symText(sym) {
+  var n = SYM_NAMES[sym];
+  return n ? n + ' (' + sym + ')' : sym;
+}
+
 /* ---- View router ---- */
 var VIEW_TITLES = {
   dashboard: 'Dashboard', lab: 'Strategy Lab', composed: 'Composed',
@@ -907,7 +926,7 @@ function selectSymbol(sym) {
   });
   ['lab', 'trd'].forEach(function(ctx) {
     var lblEl = document.getElementById(ctx + '-chart-sym-label');
-    if (lblEl) { lblEl.textContent = sym; lblEl.style.color = '#e5e7eb'; }
+    if (lblEl) { lblEl.textContent = symText(sym); lblEl.style.color = '#e5e7eb'; }
     loadCandles(sym, ctx);
   });
   updateButtons();
@@ -1205,7 +1224,7 @@ function refreshStrategies() {
       return '<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.04)">' +
         '<div style="flex:1;min-width:0">' +
           '<div style="font-size:12px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(s.name) + '</div>' +
-          '<div style="font-size:10px;color:var(--muted);margin-top:2px;font-family:ui-monospace,SFMono-Regular,monospace">' + esc(s.status) + ' · ' + esc((s.symbols || []).join(', ')) + '</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-top:2px;font-family:ui-monospace,SFMono-Regular,monospace">' + esc(s.status) + ' · ' + (s.symbols || []).map(function(sym) { return symLabel(sym); }).join(', ') + '</div>' +
         '</div>' +
         '<span class="badge badge-primary" style="font-size:9px">' + esc(s.status) + '</span>' +
         '<button class="sitem-del btn btn-danger" data-id="' + esc(s.id) + '" style="padding:2px 8px;font-size:11px">✕</button>' +
@@ -1225,7 +1244,7 @@ function refreshPositions() {
   jfetch('/api/positions').then(function(pos) {
     if (!Array.isArray(pos)) return;
     var rows = pos.map(function(p) {
-      return '<tr>' + cell(p.symbol) + cell(p.quantity, 'num') + cell(p.realizedPnl, numCls(p.realizedPnl)) + '</tr>';
+      return '<tr><td>' + symLabel(p.symbol) + '</td>' + cell(p.quantity, 'num') + cell(p.realizedPnl, numCls(p.realizedPnl)) + '</tr>';
     }).join('');
     var emptyRow = '<tr><td colspan="3" class="empty">포지션 없음</td></tr>';
     ['pos-body', 'pf-pos-body', 'dash-pos-body'].forEach(function(id) {
@@ -1274,7 +1293,7 @@ function refreshOrders() {
       var sideCls = o.side === 'BUY' ? 'pos' : 'neg';
       return '<tr>' +
         cell(o.createdAt ? new Date(o.createdAt).toLocaleTimeString() : '') +
-        cell(o.symbol) +
+        '<td>' + symLabel(o.symbol || '') + '</td>' +
         '<td class="' + sideCls + '">' + esc(o.side || '') + '</td>' +
         cell(o.orderType) +
         cell(o.quantity, 'num') +
@@ -1368,7 +1387,7 @@ function renderRanking(data) {
     var quality = (row.factors && row.factors.quality != null) ? Number(row.factors.quality).toFixed(2) : '';
     return '<tr class="rank-row" data-sym="' + esc(row.symbol) + '" style="cursor:pointer">' +
       '<td class="num">' + esc(String(row.rank)) + '</td>' +
-      '<td>' + esc(row.symbol) + '</td>' +
+      '<td>' + symLabel(row.symbol) + '</td>' +
       '<td>' + esc(row.sector || '') + '</td>' +
       '<td class="num ' + compositeColor + '">' + esc(compositeStr) + '</td>' +
       '<td class="num">' + esc(momentum) + '</td>' +
@@ -1532,8 +1551,8 @@ function renderFactorBacktest(data) {
       var mo = d.getMonth() + 1;
       var dy = d.getDate();
       var ds = d.getFullYear() + '-' + (mo < 10 ? '0' : '') + String(mo) + '-' + (dy < 10 ? '0' : '') + String(dy);
-      var holdings = Array.isArray(rb.holdings) ? rb.holdings.join(', ') : '';
-      return '<div style="font-size:10px;color:var(--muted);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:#60a5fa;display:inline-block;min-width:82px;font-family:ui-monospace,SFMono-Regular,monospace">' + esc(ds) + '</span> ' + esc(holdings) + '</div>';
+      var holdings = Array.isArray(rb.holdings) ? rb.holdings.map(function(h) { return symLabel(h); }).join(', ') : '';
+      return '<div style="font-size:10px;color:var(--muted);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:#60a5fa;display:inline-block;min-width:82px;font-family:ui-monospace,SFMono-Regular,monospace">' + esc(ds) + '</span> ' + holdings + '</div>';
     }).join('');
     rebalEl.style.display = '';
   }
@@ -1629,7 +1648,7 @@ function renderRebalancePlan(plan) {
         var deltaCls = delta > 0 ? 'num pos' : delta < 0 ? 'num neg' : 'num';
         var deltaStr = delta > 0 ? '+' + String(delta) : String(delta);
         return '<tr>' +
-          '<td>' + esc(t.symbol || '') + '</td>' +
+          '<td>' + symLabel(t.symbol || '') + '</td>' +
           '<td class="num">' + esc(String(t.targetQty != null ? t.targetQty : '')) + '</td>' +
           '<td class="num">' + esc(String(t.currentQty != null ? t.currentQty : '')) + '</td>' +
           '<td class="' + esc(deltaCls) + '">' + esc(deltaStr) + '</td>' +
@@ -1641,7 +1660,7 @@ function renderRebalancePlan(plan) {
       if (orders.length) {
         rbOrdersList.innerHTML = orders.slice(0, 20).map(function(o) {
           var oclr = o.side === 'BUY' ? 'color:#22c55e' : 'color:#ef4444';
-          return '<div class="rb-order-row"><span style="' + oclr + '">' + esc(o.side || '') + '</span> ' + esc(o.symbol || '') + ' ' + esc(String(o.qty != null ? o.qty : '')) + '</div>';
+          return '<div class="rb-order-row"><span style="' + oclr + '">' + esc(o.side || '') + '</span> ' + symLabel(o.symbol || '') + ' ' + esc(String(o.qty != null ? o.qty : '')) + '</div>';
         }).join('');
         rbOrdersSection.style.display = '';
       } else {
@@ -1651,7 +1670,7 @@ function renderRebalancePlan(plan) {
     if (rbSkippedSection && rbSkippedList) {
       if (skipped.length) {
         rbSkippedList.innerHTML = skipped.slice(0, 10).map(function(sk) {
-          return '<div class="rb-skip-row">' + esc(sk.symbol || '') + ': ' + esc(sk.reason || '') + '</div>';
+          return '<div class="rb-skip-row">' + symLabel(sk.symbol || '') + ': ' + esc(sk.reason || '') + '</div>';
         }).join('');
         rbSkippedSection.style.display = '';
       } else {
