@@ -1,5 +1,5 @@
-// Composition root: wires the paper-trading pipeline end to end.
-// LIVE is intentionally NOT wired here — promotion is a deliberate, separate step.
+// Composition root: wires the trading pipeline end to end.
+// LIVE path is env-gated: LIVE_ENABLED=1 AND DAYTRADE_MODE=LIVE both required (default: PAPER).
 
 import { resolve } from 'node:path';
 import { config } from './config/env.js';
@@ -16,9 +16,13 @@ import { OrderManager } from './order/OrderManager.js';
 import { ReconciliationService } from './order/ReconciliationService.js';
 import { StrategyEngine } from './strategy/StrategyEngine.js';
 import { TimeSeriesMomentumStrategy } from './strategy/TimeSeriesMomentumStrategy.js';
+import { VolatilityBreakoutStrategy } from './strategy/VolatilityBreakoutStrategy.js';
 import { StrategyRegistry } from './strategy/StrategyRegistry.js';
 import type { Strategy } from './strategy/Strategy.js';
 import { InMemoryEventLogger } from './observability/EventLogger.js';
+import { LiveBroker } from './broker/LiveBroker.js';
+import { makeDailyRangeProvider } from './market/dailyRange.js';
+import type { Broker } from './broker/Broker.js';
 import { HaltSwitch } from './app/HaltSwitch.js';
 import { FileHaltStore } from './app/HaltStore.js';
 import { TradingSystem, FACTOR_PORTFOLIO_STRATEGY_ID } from './app/TradingSystem.js';
@@ -38,7 +42,7 @@ import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { RebalanceScheduler } from './factor/RebalanceScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
 import { AccountService } from './app/AccountService.js';
-import type { Currency } from './domain/types.js';
+import type { Currency, TradingMode } from './domain/types.js';
 
 const HTTP_PORT = Number(process.env.PORT ?? 3000);
 // Absolute so a launch from a different cwd can't read/write a different kill-switch file.
@@ -54,6 +58,15 @@ const RISK_LIMITS = { maxPositionPct: 30, dailyMaxLoss: 500_000, maxConsecutiveL
 const FACTOR_PORTFOLIO_CAPITAL = 100_000_000;
 const FACTOR_PORTFOLIO_LIMITS = { maxPositionPct: 15, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 10 };
 
+// id=3: Volatility-breakout day-trade. Budget is the per-day capital ceiling;
+// 10% daily-loss cap (realized+unrealized) → halt; 3 losing round-trips → halt.
+const DAYTRADE_STRATEGY_ID = 3;
+const DAYTRADE_RISK_LIMITS = {
+  maxPositionPct: 100,
+  dailyMaxLoss: Math.round(config.daytrade.budget * 0.1),
+  maxConsecutiveLosses: 3,
+};
+
 const marketOf = (c: Currency): Market => (c === 'KRW' ? 'KR' : 'US');
 
 export function bootstrap() {
@@ -67,14 +80,30 @@ export function bootstrap() {
   const haltSwitch = new HaltSwitch({ store: new FileHaltStore(HALT_FILE) });   // durable kill switch
   const registry = new StrategyRegistry();
   const paperBroker = new PaperBroker(repo, book, { tracker, isHalted: () => haltSwitch.halted });
+
+  // Live broker holder: armed in main() when LIVE_ENABLED=1.
+  // Kept undefined until explicitly set so any order that somehow arrives before
+  // arming falls back to paperBroker (double safety net).
+  let activeLiveBroker: Broker | undefined;
+
   const risk = new RiskManager();
+
+  // DailyRange provider for the volatility-breakout strategy.
+  // Caches per (symbol, KST-date); in-flight deduplication built in.
+  const dailyRange = makeDailyRangeProvider((s, i, n) => client.getCandles(s, i, n));
 
   const riskContext = (strategy: Strategy, symbol: string): RiskContext => {
     // C1: factor portfolio (id=1000) runs on ₩100M with 15% max-position and lenient
     // loss limits. TSMOM strategies stay on the 10M/30% config.
+    // C3: daytrade (id=3) runs on DAYTRADE_BUDGET with its own tighter loss limits.
     const isFactorPortfolio = strategy.id === FACTOR_PORTFOLIO_STRATEGY_ID;
-    const capital = isFactorPortfolio ? FACTOR_PORTFOLIO_CAPITAL : STRATEGY_CAPITAL;
-    const limits  = isFactorPortfolio ? FACTOR_PORTFOLIO_LIMITS  : RISK_LIMITS;
+    const isDaytrade = strategy.id === DAYTRADE_STRATEGY_ID;
+    const capital = isFactorPortfolio ? FACTOR_PORTFOLIO_CAPITAL
+                  : isDaytrade ? config.daytrade.budget
+                  : STRATEGY_CAPITAL;
+    const limits  = isFactorPortfolio ? FACTOR_PORTFOLIO_LIMITS
+                  : isDaytrade ? DAYTRADE_RISK_LIMITS
+                  : RISK_LIMITS;
 
     const positions = repo.getPositions(strategy.id, strategy.mode);
     // Open mark-to-market loss so the daily-loss halt isn't blind to unrealized drawdown.
@@ -104,7 +133,13 @@ export function bootstrap() {
   };
 
   const orderManager = new OrderManager({
-    brokerFor: () => paperBroker,     // paper only here
+    // When LIVE_ENABLED=1, LIVE-mode orders route to activeLiveBroker (set in main()).
+    // When LIVE_ENABLED is absent, keep the simpler () => paperBroker lambda unchanged.
+    brokerFor: config.daytrade.liveEnabled
+      ? (mode: TradingMode) => (mode === 'LIVE' && activeLiveBroker !== undefined)
+          ? activeLiveBroker
+          : paperBroker
+      : () => paperBroker,
     risk, riskContext, logger, haltSwitch,
   });
 
@@ -125,10 +160,30 @@ export function bootstrap() {
       id: 2, symbol: '000660', currency: 'KRW', mode: 'PAPER',
       lookback: 20, orderNotional: 1_000_000,
     }),
+    // id=3: Volatility-breakout day-trade. Mode is env-gated (PAPER by default; LIVE
+    // requires LIVE_ENABLED=1 AND DAYTRADE_MODE=LIVE). Symbol/K/budget are configurable.
+    new VolatilityBreakoutStrategy({
+      id: DAYTRADE_STRATEGY_ID,
+      symbol: config.daytrade.symbol,
+      currency: 'KRW',
+      mode: config.daytrade.mode,
+      k: config.daytrade.k,
+      budget: config.daytrade.budget,
+      getDailyRange: dailyRange,
+    }),
   ];
   for (const s of strategies) {
     engine.register(s);
-    registry.register(s, `strategy-${s.id}`, 'PAPER_TESTING');
+    // Volbreakout (id=3): human-readable Korean name; status tracks the resolved mode.
+    // Registering as LIVE at boot is the owner's explicit env-flag approval; the HTTP
+    // promotion gate remains the guard for all other strategies (unchanged).
+    const name = s.id === DAYTRADE_STRATEGY_ID
+      ? '변동성돌파 단타'
+      : `strategy-${s.id}`;
+    const status = (s.id === DAYTRADE_STRATEGY_ID && config.daytrade.mode === 'LIVE')
+      ? 'LIVE' as const
+      : 'PAPER_TESTING' as const;
+    registry.register(s, name, status);
   }
 
   // Reserved stub for the AQR 4-Factor Portfolio (id=1000). Registered in registry only —
@@ -167,7 +222,14 @@ export function bootstrap() {
 
   const calendar = new MarketCalendarService({ fetchCalendar: (m) => client.getMarketCalendar(m) });
 
-  const equityRecorder = new EquityRecorder({ repo, book, capitalFor: () => STRATEGY_CAPITAL });
+  const equityRecorder = new EquityRecorder({
+    repo,
+    book,
+    capitalFor: (id: number) =>
+      id === FACTOR_PORTFOLIO_STRATEGY_ID ? FACTOR_PORTFOLIO_CAPITAL
+      : id === DAYTRADE_STRATEGY_ID ? config.daytrade.budget
+      : STRATEGY_CAPITAL,
+  });
   const snapshotScheduler = new SnapshotScheduler({
     recorder: equityRecorder,
     targets: () => strategies.map((s) => ({ id: s.id, mode: s.mode, currency: s.currency })),
@@ -313,12 +375,48 @@ export function bootstrap() {
     client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
     deployer, watchList, rebalanceScheduler, accountService,
+    setActiveLiveBroker: (b: Broker) => { activeLiveBroker = b; },
   };
 }
 
 export async function main(): Promise<void> {
-  const { worker, reconciliation, server, system, repo, tracker, statePersistence, registry, strategies, deployer, rebalanceScheduler } = bootstrap();
+  const {
+    worker, reconciliation, server, system, repo, tracker, statePersistence,
+    registry, strategies, deployer, rebalanceScheduler,
+    client, haltSwitch, setActiveLiveBroker,
+  } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
+  console.log(
+    `[daytrade] strategy id=${DAYTRADE_STRATEGY_ID} symbol=${config.daytrade.symbol}` +
+    ` K=${config.daytrade.k} budget=${config.daytrade.budget} mode=${config.daytrade.mode}` +
+    ` liveBrokerArmed=${config.daytrade.liveEnabled}`,
+  );
+
+  // Live broker: resolve Toss account and arm LiveBroker when LIVE_ENABLED=1.
+  // Must happen before worker.start() so the first quote tick finds the broker ready.
+  if (config.daytrade.liveEnabled) {
+    try {
+      const accounts = await client.getAccounts();
+      const first = accounts[0];
+      if (first === undefined || typeof first.accountSeq !== 'number') {
+        throw new Error('[live] no usable Toss account returned from getAccounts()');
+      }
+      const accountSeq = String(first.accountSeq);
+      const liveBroker = new LiveBroker(
+        client,
+        accountSeq,
+        repo,
+        { enabled: true, isHalted: () => haltSwitch.halted },
+      );
+      setActiveLiveBroker(liveBroker);
+      console.log('[live] LiveBroker armed (LIVE_ENABLED=1)');
+    } catch (err) {
+      // Fail loud — if LIVE_ENABLED=1 and broker cannot be armed, operator must know
+      console.error('[live] FAILED to arm LiveBroker:', err);
+      throw err;
+    }
+  }
+
   if (system.haltStatus().halted) {
     console.warn(`⚠️ kill switch is SET (${system.haltStatus().reason}); brokers will refuse orders until /api/resume`);
   }
