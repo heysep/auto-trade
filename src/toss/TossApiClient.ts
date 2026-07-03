@@ -11,6 +11,7 @@ import { REQUEST_TIMEOUT_MS, RateLimitError, parseBody, unwrap } from './http.js
 import type {
   OrderCreateRequest, TossOrderCreateResponse, TossOrder, TossOrdersList, TossMarketCalendar,
   TossPriceItem, TossStock, TossCandle, TossCandlePage,
+  TossAccount, TossHoldings,
 } from './types.js';
 
 const PREFIX = '/api/v1';
@@ -81,10 +82,10 @@ export class TossApiClient {
   }
 
   // --- reads ---
-  getAccounts(): Promise<unknown> {
+  getAccounts(): Promise<TossAccount[]> {
     return this.request(`${PREFIX}/accounts`);
   }
-  getHoldings(account: string): Promise<unknown> {
+  getHoldings(account: string): Promise<TossHoldings> {
     return this.request(`${PREFIX}/holdings`, {}, account);
   }
   getPrices(symbols: string[]): Promise<TossPriceItem[]> {

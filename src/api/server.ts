@@ -268,6 +268,15 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return result;
   });
 
+  // --- real account holdings (read-only, no auth) ---
+  app.get('/api/account/holdings', async (_req, reply) => {
+    const result = await system.accountHoldings();
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
   app.get('/api/performance', async (req, reply) => {
     const q = (req.query as Record<string, string | undefined>);
     const rawId = q['strategyId'];

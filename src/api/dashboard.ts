@@ -655,8 +655,32 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
           </div>
         </div>
       </div>
+      <!-- Real Toss account holdings (read-only) -->
+      <div class="card" id="acct-holdings-card" style="margin-top:12px;padding:0;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">내 계좌 (실계좌 · 읽기전용)</span>
+          <button id="btn-acct-refresh" class="btn btn-ghost" style="font-size:10px;padding:2px 8px;margin-left:auto">새로고침</button>
+        </div>
+        <div id="acct-status" style="display:none;padding:10px 16px;font-size:11px;color:var(--muted)"></div>
+        <div id="acct-summary" style="display:none;flex-wrap:wrap;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border)">
+          <div class="mitem"><span class="mlabel">매입금액</span><span class="mval neu" id="acct-purchase"></span></div>
+          <div class="mitem"><span class="mlabel">평가금액</span><span class="mval neu" id="acct-market"></span></div>
+          <div class="mitem"><span class="mlabel">평가손익</span><span class="mval neu" id="acct-pnl"></span></div>
+          <div class="mitem"><span class="mlabel">일간손익</span><span class="mval neu" id="acct-daily"></span></div>
+        </div>
+        <div id="acct-table-wrap" style="display:none">
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>종목</th><th class="num">수량</th><th class="num">평균단가</th><th class="num">현재가</th><th class="num">평가금액</th><th class="num">평가손익</th><th class="num">수익률%</th></tr></thead>
+              <tbody id="acct-holdings-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Paper positions (strategy simulation) -->
       <div class="card" style="margin-top:12px;padding:0;overflow:hidden">
-        <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">보유 포지션</div>
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">페이퍼 포지션 (전략 운용)</div>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>종목</th><th class="num">수량</th><th class="num">실현손익</th></tr></thead>
@@ -810,7 +834,7 @@ function navigate(view) {
   var titleEl = document.getElementById('topbar-title');
   if (titleEl) titleEl.textContent = VIEW_TITLES[view];
   if (view === 'ranking' && !rankLoaded && !rankLoading) loadRanking();
-  if (view === 'portfolio') loadAutoRebalanceStatus();
+  if (view === 'portfolio') { loadAutoRebalanceStatus(); loadAccountHoldings(); }
   if (view === 'performance') loadPerfData();
   if (view === 'dashboard') loadDashPerf();
   if (view === 'lab' && labChart) labChart.applyOptions({ width: document.getElementById('lab-chart').offsetWidth });
@@ -1784,6 +1808,93 @@ function loadAutoRebalanceStatus() {
   } catch (e) {
     console.error('[arb] loadAutoRebalanceStatus outer error:', e);
   }
+}
+
+/* ---- Real account holdings (read-only) ---- */
+function loadAccountHoldings() {
+  try {
+    var statusEl = document.getElementById('acct-status');
+    var summaryEl = document.getElementById('acct-summary');
+    var tableEl = document.getElementById('acct-table-wrap');
+    var tbody = document.getElementById('acct-holdings-body');
+    var purchaseEl = document.getElementById('acct-purchase');
+    var marketEl = document.getElementById('acct-market');
+    var pnlEl = document.getElementById('acct-pnl');
+    var dailyEl = document.getElementById('acct-daily');
+    if (!statusEl || !summaryEl || !tableEl) return;
+    // Reset state
+    statusEl.style.display = 'none';
+    summaryEl.style.display = 'none';
+    tableEl.style.display = 'none';
+    jfetch('/api/account/holdings')
+      .then(function(data) {
+        if (data && data.error) {
+          // 503 = service not wired, 502 = upstream API error
+          statusEl.style.display = '';
+          if (data.error.indexOf('not wired') !== -1) {
+            statusEl.textContent = '실계좌 연동 비활성';
+            statusEl.style.color = 'var(--muted)';
+          } else {
+            statusEl.textContent = '계좌 조회 실패 (토스 API)';
+            statusEl.style.color = 'var(--bear)';
+          }
+          return;
+        }
+        if (!data || !data.summary) return;
+        // Summary cards
+        var s = data.summary;
+        var pnl = Number(s.profitLoss) || 0;
+        var daily = Number(s.dailyProfitLoss) || 0;
+        if (purchaseEl) purchaseEl.textContent = Math.round(Number(s.purchaseAmount) || 0).toLocaleString();
+        if (marketEl) marketEl.textContent = Math.round(Number(s.marketValue) || 0).toLocaleString();
+        if (pnlEl) {
+          pnlEl.textContent = (pnl >= 0 ? '+' : '') + Math.round(pnl).toLocaleString();
+          pnlEl.className = 'mval ' + (pnl > 0 ? 'bull' : pnl < 0 ? 'bear' : 'neu');
+        }
+        if (dailyEl) {
+          dailyEl.textContent = (daily >= 0 ? '+' : '') + Math.round(daily).toLocaleString();
+          dailyEl.className = 'mval ' + (daily > 0 ? 'bull' : daily < 0 ? 'bear' : 'neu');
+        }
+        summaryEl.style.display = 'flex';
+        // Holdings table
+        if (tbody && Array.isArray(data.items)) {
+          var rows = '';
+          for (var i = 0; i < data.items.length; i++) {
+            var it = data.items[i];
+            var itPnl = Number(it.profitLoss) || 0;
+            var pnlCls = itPnl > 0 ? 'bull' : itPnl < 0 ? 'bear' : '';
+            var retPct = Number(it.returnPct) || 0;
+            var retStr = (retPct >= 0 ? '+' : '') + (retPct * 100).toFixed(2) + '%';
+            rows +=
+              '<tr>' +
+              '<td><span style="font-weight:600">' + esc(it.name || it.symbol) + '</span>' +
+              ' <span style="font-size:10px;color:var(--muted)">' + esc(it.symbol) + '</span></td>' +
+              '<td class="num">' + esc(Math.round(Number(it.quantity) || 0).toLocaleString()) + '</td>' +
+              '<td class="num">' + esc(Math.round(Number(it.avgPrice) || 0).toLocaleString()) + '</td>' +
+              '<td class="num">' + esc(Math.round(Number(it.lastPrice) || 0).toLocaleString()) + '</td>' +
+              '<td class="num">' + esc(Math.round(Number(it.marketValue) || 0).toLocaleString()) + '</td>' +
+              '<td class="num ' + esc(pnlCls) + '">' + esc((itPnl >= 0 ? '+' : '') + Math.round(itPnl).toLocaleString()) + '</td>' +
+              '<td class="num ' + esc(pnlCls) + '">' + esc(retStr) + '</td>' +
+              '</tr>';
+          }
+          tbody.innerHTML = rows || '<tr><td colspan="7" class="empty">보유 종목 없음</td></tr>';
+        }
+        tableEl.style.display = '';
+      })
+      .catch(function(e) {
+        console.error('[acct] loadAccountHoldings error:', e);
+        statusEl.style.display = '';
+        statusEl.textContent = '계좌 조회 실패 (토스 API)';
+        statusEl.style.color = 'var(--bear)';
+      });
+  } catch (e) {
+    console.error('[acct] loadAccountHoldings outer error:', e);
+  }
+}
+
+var acctRefreshBtn = document.getElementById('btn-acct-refresh');
+if (acctRefreshBtn) {
+  acctRefreshBtn.addEventListener('click', function() { loadAccountHoldings(); });
 }
 
 var arbToggle = document.getElementById('arb-toggle');

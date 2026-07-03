@@ -16,6 +16,7 @@ import type { FactorRankingService, RankingResult } from '../factor/FactorRankin
 import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport } from '../factor/FactorBacktestService.js';
 import type { FactorPortfolioManager, RebalancePlan } from '../factor/FactorPortfolioManager.js';
 import type { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
+import type { AccountService, AccountHoldingsView } from './AccountService.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -65,6 +66,8 @@ export interface TradingSystemDeps {
   rebalanceScheduler?: RebalanceScheduler;
   /** Performance metrics + equity curve service. Omitted => performance() returns 503. */
   performance?: PerformanceService;
+  /** Real Toss account holdings service (read-only). Omitted => accountHoldings() returns 503. */
+  account?: AccountService;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -296,6 +299,24 @@ export class TradingSystem {
       metrics: svc.metrics(strategyId, mode),
       equityCurve: this.deps.repo.getEquitySnapshots(strategyId, mode).map((s) => ({ day: s.day, nav: s.nav })),
     };
+  }
+
+  /**
+   * Return real brokerage account holdings (read-only).
+   * Returns 503 when AccountService is not wired.
+   * Returns 502 on upstream Toss API error (logs message only — no secrets).
+   */
+  async accountHoldings(): Promise<AccountHoldingsView | { error: string; code: number }> {
+    const svc = this.deps.account;
+    if (svc === undefined) {
+      return { error: 'account service not wired', code: 503 };
+    }
+    try {
+      return await svc.holdings();
+    } catch (err) {
+      console.error('[account] holdings fetch failed:', err instanceof Error ? err.message : String(err));
+      return { error: 'account fetch failed', code: 502 };
+    }
   }
 
   async backtest(input: {

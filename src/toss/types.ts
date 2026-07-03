@@ -131,6 +131,42 @@ export interface ChartCandle {
   close: number;
 }
 
+// --- Account and Holdings (GET /api/v1/accounts, GET /api/v1/holdings) ---
+// All numeric fields are strings in the Toss API (confirmed via live probe 2026-06-30).
+
+export interface TossAccount {
+  accountSeq: number;
+}
+
+/** KRW/USD pair used in holdings summary fields. Both values are strings. */
+export interface TossHoldingsMoney {
+  krw: string;
+  usd: string;
+}
+
+/** Individual holding item returned inside holdings.items[]. */
+export interface TossHoldingsItem {
+  symbol: string;
+  name: string;
+  marketCountry: string;
+  currency: string;
+  quantity: string;
+  lastPrice: string;
+  averagePurchasePrice: string;
+  marketValue: string;
+  profitLoss: string;
+  cost: string;
+}
+
+/** Unwrapped response from GET /api/v1/holdings (result envelope stripped by unwrap()). */
+export interface TossHoldings {
+  totalPurchaseAmount: TossHoldingsMoney;
+  marketValue: TossHoldingsMoney;
+  profitLoss: TossHoldingsMoney;
+  dailyProfitLoss: TossHoldingsMoney;
+  items: TossHoldingsItem[];
+}
+
 // --- Market calendar (regular/pre/after sessions are startTime/endTime ISO pairs) ---
 
 export interface TossSession { startTime: string; endTime: string; }

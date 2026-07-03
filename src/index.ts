@@ -37,6 +37,7 @@ import { EquityRecorder } from './performance/EquityRecorder.js';
 import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { RebalanceScheduler } from './factor/RebalanceScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
+import { AccountService } from './app/AccountService.js';
 import type { Currency } from './domain/types.js';
 
 const HTTP_PORT = Number(process.env.PORT ?? 3000);
@@ -279,6 +280,9 @@ export function bootstrap() {
     logger: { log: (e) => logger.log({ type: 'REBALANCE_ERROR', message: String(e), at: Date.now() }) },
   });
 
+  // Real Toss account holdings (read-only). Cached: accountSeq forever, holdings 30 s.
+  const accountService = new AccountService({ client });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -293,6 +297,7 @@ export function bootstrap() {
     factorPortfolioTopN: 10,
     rebalanceScheduler,
     performance: perf,
+    account: accountService,
   });
   systemRef = system;
 
@@ -307,7 +312,7 @@ export function bootstrap() {
   return {
     client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
-    deployer, watchList, rebalanceScheduler,
+    deployer, watchList, rebalanceScheduler, accountService,
   };
 }
 

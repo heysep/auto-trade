@@ -28,6 +28,7 @@ import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
 import { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 import { PerformanceService } from '../performance/PerformanceService.js';
 import { InMemoryTradeTracker } from '../risk/TradeTracker.js';
+import type { AccountService, AccountHoldingsView } from '../app/AccountService.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -49,6 +50,8 @@ function harness(opts: {
   rebalanceScheduler?: RebalanceScheduler;
   /** When true, harness creates a PerformanceService sharing the same repo instance. */
   withPerformanceService?: boolean;
+  /** Real account holdings service mock. Omitted => accountHoldings() returns 503. */
+  account?: AccountService;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -94,6 +97,7 @@ function harness(opts: {
     ...(opts.factorPortfolioTopN !== undefined ? { factorPortfolioTopN: opts.factorPortfolioTopN } : {}),
     ...(opts.rebalanceScheduler !== undefined ? { rebalanceScheduler: opts.rebalanceScheduler } : {}),
     ...(perfSvc !== undefined ? { performance: perfSvc } : {}),
+    ...(opts.account !== undefined ? { account: opts.account } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer, book, repo };
 }
@@ -907,5 +911,29 @@ describe('GET /api/performance', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json<{ equityCurve: { day: string; nav: number }[] }>();
     expect(body.equityCurve.some((p) => p.day === '2026-04-01')).toBe(true);
+  });
+
+  // --- GET /api/account/holdings ---
+
+  it('GET /api/account/holdings returns 200 with holdings data when account service is wired', async () => {
+    const fakeHoldings: AccountHoldingsView = {
+      summary: { purchaseAmount: 1_000_000, marketValue: 1_100_000, profitLoss: 100_000, dailyProfitLoss: 5_000 },
+      items: [{ symbol: 'A001', name: '종목A', quantity: 10, avgPrice: 100_000, lastPrice: 110_000, marketValue: 1_100_000, profitLoss: 100_000, returnPct: 0.1 }],
+    };
+    const account = { holdings: vi.fn().mockResolvedValue(fakeHoldings) } as unknown as AccountService;
+    const { app } = harness({ account });
+    const res = await app.inject({ method: 'GET', url: '/api/account/holdings' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<AccountHoldingsView>();
+    expect(body.summary.purchaseAmount).toBe(1_000_000);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]?.symbol).toBe('A001');
+  });
+
+  it('GET /api/account/holdings returns 503 when account service is not wired', async () => {
+    const { app } = harness(); // no account dep
+    const res = await app.inject({ method: 'GET', url: '/api/account/holdings' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json<{ error: string }>().error).toMatch(/not wired/);
   });
 });
