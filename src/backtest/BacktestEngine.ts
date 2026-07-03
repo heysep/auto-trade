@@ -15,11 +15,20 @@ export interface BacktestOptions {
   spreadBps?: number;
 }
 
+/** A single fill captured for chart marker overlay (BUY/SELL pins on the candle chart). */
+export interface BacktestFill {
+  time: number;
+  side: 'BUY' | 'SELL';
+  price: number;
+  quantity: number;
+}
+
 export interface BacktestResult {
   metrics: PerformanceMetrics;
   equityCurve: number[];     // capital-anchored NAV after each bar (length = bars + 1)
   trades: RoundTrip[];
   rejected: number;          // orders that couldn't fill (e.g. oversell)
+  fills: BacktestFill[];     // per-fill markers for chart overlay (MARKET orders only; resting-limit fills via onQuote are not captured)
   finalPosition?: Position;  // omitted when flat
 }
 
@@ -49,6 +58,7 @@ export class BacktestEngine {
     let pending: OrderRequest | null = null;         // intent queued on the prior bar
     let seq = 0;
     let rejected = 0;
+    const fills: BacktestFill[] = [];
 
     for (const bar of bars) {
       now = bar.ts;
@@ -58,7 +68,12 @@ export class BacktestEngine {
 
       // 1) Execute the previous bar's decision at THIS bar's prices (no look-ahead).
       if (pending) {
-        try { await broker.placeOrder(pending); }
+        try {
+          const result = await broker.placeOrder(pending);
+          for (const f of result.fills) {
+            fills.push({ time: bar.ts, side: result.order.side, price: f.price, quantity: f.quantity });
+          }
+        }
         catch (err) { if (/Oversell/.test(String(err))) rejected++; else throw err; }
         pending = null;
       }
@@ -87,6 +102,7 @@ export class BacktestEngine {
       equityCurve,
       trades,
       rejected,
+      fills,
       ...(finalPosition && finalPosition.quantity !== 0 ? { finalPosition } : {}),
     };
   }

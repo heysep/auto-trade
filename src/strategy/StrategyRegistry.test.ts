@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { StrategyRegistry } from './StrategyRegistry.js';
-import { ThresholdStrategy } from './ThresholdStrategy.js';
+import { TimeSeriesMomentumStrategy } from './TimeSeriesMomentumStrategy.js';
 
-const strat = (id: number) => new ThresholdStrategy({
+const strat = (id: number) => new TimeSeriesMomentumStrategy({
   id, symbol: '005930', currency: 'KRW', mode: 'PAPER',
-  buyBelow: 70_000, sellAbove: 80_000, orderNotional: 1_000_000,
+  lookback: 20, orderNotional: 1_000_000,
 });
 
 describe('StrategyRegistry', () => {
@@ -29,5 +29,29 @@ describe('StrategyRegistry', () => {
     expect(r.setStatus(1, 'APPROVED')?.status).toBe('APPROVED');
     expect(r.get(1)?.status).toBe('APPROVED');
     expect(r.setStatus(99, 'LIVE')).toBeUndefined();
+  });
+
+  it('remove deletes an entry and returns true', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    r.register(strat(2), 'b');
+    expect(r.remove(1)).toBe(true);
+    expect(r.get(1)).toBeUndefined();
+    expect(r.list()).toHaveLength(1);
+    expect(r.list()[0]?.id).toBe(2);
+  });
+
+  it('remove returns false for unknown id', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    expect(r.remove(99)).toBe(false);
+    expect(r.list()).toHaveLength(1);
+  });
+
+  it('remove cleans up entry(id) as well', () => {
+    const r = new StrategyRegistry();
+    r.register(strat(1), 'a');
+    r.remove(1);
+    expect(r.entry(1)).toBeUndefined();
   });
 });

@@ -1,0 +1,727 @@
+// TDD: tests written BEFORE the implementation.
+// FactorRankingService orchestrates universe assembly → candle fetch → FactorModel → ranked result.
+
+import { describe, it, expect } from 'vitest';
+import { FactorRankingService } from './FactorRankingService.js';
+import { FactorModel } from './FactorModel.js';
+import type { FundamentalsService, MarketCapEntry, FundamentalsResult } from './FundamentalsService.js';
+import type { TossStock, TossCandle } from '../toss/types.js';
+
+// Small periods so a 5-bar price series is enough for all four raw factors.
+// momSkip=1, momLong=3 → needs n>3 (≥4 bars)  ✓
+// volWindow=3          → needs n>3              ✓
+// mddWindow=3          → needs ≥2 bars in slice ✓
+const SMALL_PERIODS = {
+  momSkip: 1,
+  momLong: 3,
+  momMid: 2,
+  volWindow: 3,
+  mddWindow: 3,
+};
+
+/** Build TossCandle[] from an array of close prices (oldest→newest). */
+function makeCandles(closes: number[]): TossCandle[] {
+  return closes.map((close, i) => ({
+    // timestamps are 1 s, 2 s, … apart (distinct ISO strings)
+    timestamp: new Date(1000 * (i + 1)).toISOString(),
+    openPrice: String(close),
+    highPrice: String(close),
+    lowPrice: String(close),
+    closePrice: String(close),
+  }));
+}
+
+/** Steady rise → positive momentum, low vol, zero MDD. */
+const RISING_CLOSES = [100, 102, 104, 106, 108];
+/** Sharp decline with high vol → negative momentum, high vol, large MDD. */
+const FALLING_CLOSES = [100, 80, 120, 60, 50];
+/** Flat → zero momentum, zero vol, zero MDD (still scorable). */
+const FLAT_CLOSES = [100, 100, 100, 100, 100];
+
+const UNIVERSE: TossStock[] = [
+  { symbol: 'RISING', name: 'Rising Stock', market: 'KR' },
+  { symbol: 'FALLING', name: 'Falling Stock', market: 'KR' },
+  { symbol: 'FLAT', name: 'Flat Stock', market: 'KR' },
+];
+
+const CLOSES_BY_SYMBOL: Record<string, number[]> = {
+  RISING: RISING_CLOSES,
+  FALLING: FALLING_CLOSES,
+  FLAT: FLAT_CLOSES,
+};
+
+function makeGetCandles(
+  closes: Record<string, number[]>,
+): (symbol: string, interval: '1d', count: number) => Promise<TossCandle[]> {
+  return async (symbol: string, _interval: '1d', _count: number) => {
+    const data = closes[symbol];
+    if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+    return makeCandles(data);
+  };
+}
+
+describe('FactorRankingService', () => {
+  describe('ranking correctness', () => {
+    it('returns a result with contiguous ranks 1..N sorted by composite', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      // universeSize counts all symbols; fetched counts those with usable candles
+      expect(result.universeSize).toBe(3);
+      expect(result.fetched).toBe(3);
+      expect(result.skipped).toBe(0);
+      expect(result.scored).toHaveLength(3);
+
+      // Ranks must be exactly 1, 2, 3 — contiguous, no gaps, no repeats
+      const ranks = result.scored.map((s) => s.rank).sort((a, b) => a - b);
+      expect(ranks).toEqual([1, 2, 3]);
+
+      // scored is already rank-sorted: scored[0].rank === 1
+      expect(result.scored[0]?.rank).toBe(1);
+      expect(result.scored[1]?.rank).toBe(2);
+      expect(result.scored[2]?.rank).toBe(3);
+    });
+
+    it('rising/low-vol stock outranks falling/high-vol stock', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      const risingEntry = result.scored.find((s) => s.symbol === 'RISING');
+      const fallingEntry = result.scored.find((s) => s.symbol === 'FALLING');
+
+      expect(risingEntry).toBeDefined();
+      expect(fallingEntry).toBeDefined();
+      // Lower rank number = better; rising stock must beat the volatile faller
+      expect(risingEntry!.rank).toBeLessThan(fallingEntry!.rank);
+    });
+
+    it('passes the default candleCount (280) to getCandles', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const capturedCounts: number[] = [];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        count: number,
+      ): Promise<TossCandle[]> => {
+        capturedCounts.push(count);
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+      });
+
+      await service.rank();
+
+      // Every symbol must receive count=280 (the default candleCount)
+      expect(capturedCounts).toHaveLength(UNIVERSE.length);
+      expect(capturedCounts.every((c) => c === 280)).toBe(true);
+    });
+
+    it('passes a custom candleCount when configured', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const capturedCounts: number[] = [];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        count: number,
+      ): Promise<TossCandle[]> => {
+        capturedCounts.push(count);
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        candleCount: 350,
+      });
+
+      await service.rank();
+
+      expect(capturedCounts.every((c) => c === 350)).toBe(true);
+    });
+  });
+
+  describe('caching + limit', () => {
+    it('limit slices the top-N without triggering a refetch within TTL', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let callCount = 0;
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        callCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown symbol: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs: 60_000,
+      });
+
+      // First call: fetches all 3 symbols
+      const full = await service.rank();
+      expect(callCount).toBe(3);
+      expect(full.scored).toHaveLength(3);
+
+      // Second call within TTL with limit=2: no new candle fetches
+      callCount = 0;
+      const limited = await service.rank(2);
+
+      expect(callCount).toBe(0); // must be zero — cache was reused
+      expect(limited.scored).toHaveLength(2);
+
+      // The two returned items must be rank 1 and rank 2
+      expect(limited.scored[0]?.rank).toBe(1);
+      expect(limited.scored[1]?.rank).toBe(2);
+
+      // Same leading symbols as the full result
+      expect(limited.scored[0]?.symbol).toBe(full.scored[0]?.symbol);
+      expect(limited.scored[1]?.symbol).toBe(full.scored[1]?.symbol);
+
+      // The non-sliced fields come from the cached full computation
+      expect(limited.universeSize).toBe(3);
+      expect(limited.fetched).toBe(3);
+    });
+
+    it('unrestricted rank() after limit does not refetch', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let callCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        callCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs: 60_000,
+      });
+
+      await service.rank(1);       // first call — fetches 3
+      callCount = 0;
+
+      const full = await service.rank(); // no limit — should still come from cache
+      expect(callCount).toBe(0);
+      expect(full.scored).toHaveLength(3);
+    });
+  });
+
+  describe('per-symbol failure isolation', () => {
+    it('skips a symbol whose getCandles throws and continues ranking others', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const ERR_SYMBOL = 'FAILING';
+
+      const universe: TossStock[] = [
+        { symbol: 'RISING', name: 'Rising', market: 'KR' },
+        { symbol: ERR_SYMBOL, name: 'Failing', market: 'KR' },
+        { symbol: 'FLAT', name: 'Flat', market: 'KR' },
+      ];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        if (symbol === ERR_SYMBOL) throw new Error('upstream error');
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles,
+        model,
+      });
+
+      const result = await service.rank();
+
+      // universe has 3 symbols; one failed; two ranked
+      expect(result.universeSize).toBe(3);
+      expect(result.skipped).toBe(1);
+      expect(result.fetched).toBe(2);
+      expect(result.scored).toHaveLength(2);
+
+      // The failed symbol must not appear in scored
+      expect(result.scored.find((s) => s.symbol === ERR_SYMBOL)).toBeUndefined();
+    });
+
+    it('skips a symbol that returns empty candles', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      const universe: TossStock[] = [
+        { symbol: 'RISING', name: 'Rising', market: 'KR' },
+        { symbol: 'EMPTY', name: 'Empty candles', market: 'KR' },
+        { symbol: 'FLAT', name: 'Flat', market: 'KR' },
+      ];
+
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        if (symbol === 'EMPTY') return [];
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles,
+        model,
+      });
+
+      const result = await service.rank();
+
+      expect(result.skipped).toBe(1);
+      expect(result.fetched).toBe(2);
+      expect(result.scored.find((s) => s.symbol === 'EMPTY')).toBeUndefined();
+    });
+  });
+
+  describe('TTL / cache invalidation', () => {
+    it('does NOT refetch while within TTL', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let callCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        callCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const ttlMs = 60_000;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs,
+      });
+
+      await service.rank();
+      expect(callCount).toBe(3);
+
+      callCount = 0;
+      now = ttlMs - 1; // still fresh (age = 59 999 ms < 60 000 ms)
+      await service.rank();
+      expect(callCount).toBe(0);
+    });
+
+    it('refetches after TTL expires', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let callCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        callCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const ttlMs = 60_000;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs,
+      });
+
+      // Prime the cache
+      await service.rank();
+      expect(callCount).toBe(3);
+
+      // Still within TTL — no refetch
+      callCount = 0;
+      now = ttlMs - 1;
+      await service.rank();
+      expect(callCount).toBe(0);
+
+      // Past TTL — must refetch
+      callCount = 0;
+      now = ttlMs + 1; // age = ttlMs+1 ms ≥ ttlMs
+      await service.rank();
+      expect(callCount).toBe(3);
+
+      // asOf updated to the new now
+      const result = await service.rank();
+      expect(result.asOf).toBe(now);
+    });
+  });
+
+  describe('in-flight dedup (thundering herd)', () => {
+    it('two concurrent cold-cache rank() calls fetch each symbol exactly once', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => 0,
+        ttlMs: 60_000,
+      });
+
+      // Fire two concurrent cold-cache calls.
+      const [r1, r2] = await Promise.all([service.rank(), service.rank()]);
+
+      // 3 symbols — without dedup, both calls would fetch 3 each = 6 total.
+      // With dedup, the second call awaits the first's in-flight promise: total = 3.
+      expect(fetchCount).toBe(UNIVERSE.length);
+      expect(r1.scored).toHaveLength(3);
+      expect(r2.scored).toHaveLength(3);
+    });
+
+    it('a call after the in-flight settles still serves from TTL cache', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      let fetchCount = 0;
+      const getCandles = async (
+        symbol: string,
+        _interval: '1d',
+        _count: number,
+      ): Promise<TossCandle[]> => {
+        fetchCount++;
+        const data = CLOSES_BY_SYMBOL[symbol];
+        if (data === undefined) throw new Error(`unknown: ${symbol}`);
+        return makeCandles(data);
+      };
+
+      let now = 0;
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles,
+        model,
+        now: () => now,
+        ttlMs: 60_000,
+      });
+
+      // Prime with concurrent calls (should only fetch 3 total).
+      await Promise.all([service.rank(), service.rank()]);
+      expect(fetchCount).toBe(UNIVERSE.length);
+
+      // A subsequent call within TTL must NOT trigger new fetches.
+      fetchCount = 0;
+      now = 1_000; // still fresh
+      await service.rank();
+      expect(fetchCount).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fundamentals integration (value + quality factors via OpenDART)
+  // ---------------------------------------------------------------------------
+
+  describe('fundamentals integration', () => {
+    it('I1: fundamentals fetch failure degrades gracefully to price-only ranking', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // getStocks succeeds (so the code reaches fundamentalsService.compute)
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }));
+
+      // FundamentalsService that always rejects (simulates DART down / corpCodeMap throw)
+      const failingFundamentals = {
+        compute: async (_entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          throw new Error('DART corpCodeMap error');
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: failingFundamentals,
+      });
+
+      // Must not throw — degrades to price-only ranking
+      const result = await service.rank();
+
+      // Ranked list is still non-empty
+      expect(result.scored.length).toBeGreaterThan(0);
+
+      // In price-only mode, no 'value' or 'quality' factor is present in any scored entry.
+      for (const entry of result.scored) {
+        expect(entry.factors['value']).toBeUndefined();
+        expect(entry.factors['quality']).toBeUndefined();
+      }
+    });
+
+    it('includes value and quality in scored[].factors when getStocks + fundamentals provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // getStocks returns sharesOutstanding for each symbol
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }));
+
+      // Fake FundamentalsService: returns maps covering all input symbols
+      let computeCallCount = 0;
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          computeCallCount++;
+          const syms = entries.map((e) => e.symbol);
+          return {
+            value: new Map(syms.map((s) => [s, 0] as [string, number])),
+            quality: new Map(syms.map((s) => [s, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      const result = await service.rank();
+
+      expect(result.scored.length).toBeGreaterThan(0);
+      for (const s of result.scored) {
+        // When fundamentals maps cover all scorable symbols, value + quality must appear.
+        expect(s.factors.value).toBeDefined();
+        expect(s.factors.quality).toBeDefined();
+        expect(s.factors.momentum).toBeDefined();
+        expect(s.factors.defensive).toBeDefined();
+      }
+      expect(computeCallCount).toBe(1);
+    });
+
+    it('passes market-cap entries derived from sharesOutstanding * lastClose to fundamentals.compute', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      const SHARES = 500_000;
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: SHARES }));
+
+      let capturedEntries: MarketCapEntry[] = [];
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          capturedEntries = entries;
+          return {
+            value:   new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+            quality: new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      await service.rank();
+
+      // capturedEntries must cover all successfully-fetched symbols
+      expect(capturedEntries).toHaveLength(UNIVERSE.length);
+      for (const entry of capturedEntries) {
+        // marketCap = SHARES * lastClose; lastClose for RISING is 108
+        expect(entry.marketCap).toBeGreaterThan(0);
+        expect(entry.marketCap).toBe(SHARES * (CLOSES_BY_SYMBOL[entry.symbol]?.at(-1) ?? 0));
+      }
+    });
+
+    it('omits value and quality when neither getStocks nor fundamentals is provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        // no getStocks, no fundamentals
+      });
+
+      const result = await service.rank();
+
+      for (const s of result.scored) {
+        expect(s.factors.value).toBeUndefined();
+        expect(s.factors.quality).toBeUndefined();
+        // Price factors still present
+        expect(s.factors.momentum).toBeDefined();
+        expect(s.factors.defensive).toBeDefined();
+      }
+    });
+
+    it('still works (price-only) if only one of getStocks/fundamentals is provided', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Only getStocks provided, no fundamentals service
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) => ({ symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000 }));
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        // no fundamentals
+      });
+
+      const result = await service.rank();
+      expect(result.scored.length).toBeGreaterThan(0);
+      for (const s of result.scored) {
+        expect(s.factors.value).toBeUndefined();
+        expect(s.factors.quality).toBeUndefined();
+      }
+    });
+
+    it('symbols missing sharesOutstanding receive marketCap=0 (imputed to neutral in fundamentals)', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Only RISING gets sharesOutstanding; others don't
+      const getStocks = async (symbols: string[]): Promise<TossStock[]> =>
+        symbols.map((s) =>
+          s === 'RISING'
+            ? { symbol: s, name: s, market: 'KR', sharesOutstanding: 1_000_000 }
+            : { symbol: s, name: s, market: 'KR' }, // no sharesOutstanding
+        );
+
+      let capturedEntries: MarketCapEntry[] = [];
+      const fakeFundamentals = {
+        compute: async (entries: MarketCapEntry[]): Promise<FundamentalsResult> => {
+          capturedEntries = entries;
+          return {
+            value:   new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+            quality: new Map(entries.map((e) => [e.symbol, 0] as [string, number])),
+          };
+        },
+      } as unknown as FundamentalsService;
+
+      const service = new FactorRankingService({
+        universe: () => UNIVERSE,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+        getStocks,
+        fundamentals: fakeFundamentals,
+      });
+
+      await service.rank();
+
+      // All symbols present in entries passed to compute
+      expect(capturedEntries).toHaveLength(UNIVERSE.length);
+
+      // Symbols without sharesOutstanding get marketCap=0
+      for (const entry of capturedEntries) {
+        if (entry.symbol !== 'RISING') {
+          expect(entry.marketCap).toBe(0);
+        }
+      }
+    });
+  });
+
+  describe('sector pass-through', () => {
+    it('UniverseEntry.sector is taken from stock.sector when present', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      // Universe with distinct sectors so we can verify pass-through
+      const universe: TossStock[] = [
+        { symbol: 'RISING',  name: 'Rising',  market: 'KR', sector: '반도체' },
+        { symbol: 'FALLING', name: 'Falling', market: 'KR', sector: '자동차' },
+        { symbol: 'FLAT',    name: 'Flat',    market: 'KR', sector: '금융'   },
+      ];
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      // Each ScoredSymbol.sector must reflect the stock's sector, not 'KR'
+      for (const scored of result.scored) {
+        const stock = universe.find((s) => s.symbol === scored.symbol);
+        expect(stock).toBeDefined();
+        expect(scored.sector).toBe(stock?.sector);
+      }
+    });
+
+    it('falls back to stock.market when sector is absent', async () => {
+      const model = new FactorModel(undefined, SMALL_PERIODS);
+
+      const universe: TossStock[] = [
+        { symbol: 'RISING',  name: 'Rising',  market: 'KOSPI'  }, // no sector
+        { symbol: 'FALLING', name: 'Falling', market: 'KOSDAQ' }, // no sector
+        { symbol: 'FLAT',    name: 'Flat',    market: 'KOSPI'  }, // no sector
+      ];
+
+      const service = new FactorRankingService({
+        universe: () => universe,
+        getCandles: makeGetCandles(CLOSES_BY_SYMBOL),
+        model,
+      });
+
+      const result = await service.rank();
+
+      // With no sector field, must fall back to market string
+      for (const scored of result.scored) {
+        const stock = universe.find((s) => s.symbol === scored.symbol);
+        expect(stock).toBeDefined();
+        expect(scored.sector).toBe(stock?.market);
+      }
+    });
+  });
+});
