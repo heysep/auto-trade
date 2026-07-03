@@ -48,4 +48,6 @@ export const KRX_SYMBOLS: TossStock[] = [
   { symbol: '293490', name: '카카오게임즈',    market: 'KR', sector: '게임',      englishName: 'Kakao Games' },
   { symbol: '352820', name: '하이브',           market: 'KR', sector: '엔터/기타', englishName: 'HYBE' },
   { symbol: '041510', name: 'SM엔터테인먼트',  market: 'KR', sector: '엔터/기타', englishName: 'SM Entertainment' },
+  { symbol: '247540', name: '에코프로비엠',    market: 'KR', sector: '2차전지',   englishName: 'EcoPro BM' },
+  { symbol: '086520', name: '에코프로',        market: 'KR', sector: '2차전지',   englishName: 'EcoPro' },
 ];

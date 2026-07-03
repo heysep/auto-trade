@@ -161,14 +161,16 @@ export function bootstrap() {
       lookback: 20, orderNotional: 1_000_000,
     }),
     // id=3: Volatility-breakout day-trade. Mode is env-gated (PAPER by default; LIVE
-    // requires LIVE_ENABLED=1 AND DAYTRADE_MODE=LIVE). Symbol/K/budget are configurable.
+    // requires LIVE_ENABLED=1 AND DAYTRADE_MODE=LIVE). Symbol list/K/budget/minRangePct configurable.
+    // The affordability filter (floor(budget/todayOpen) >= 1) auto-drops any symbol the budget can't buy.
     new VolatilityBreakoutStrategy({
       id: DAYTRADE_STRATEGY_ID,
-      symbol: config.daytrade.symbol,
+      symbols: config.daytrade.symbols,
       currency: 'KRW',
       mode: config.daytrade.mode,
       k: config.daytrade.k,
       budget: config.daytrade.budget,
+      minRangePct: config.daytrade.minRangePct,
       getDailyRange: dailyRange,
     }),
   ];
@@ -387,8 +389,10 @@ export async function main(): Promise<void> {
   } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
   console.log(
-    `[daytrade] strategy id=${DAYTRADE_STRATEGY_ID} symbol=${config.daytrade.symbol}` +
-    ` K=${config.daytrade.k} budget=${config.daytrade.budget} mode=${config.daytrade.mode}` +
+    `[daytrade] strategy id=${DAYTRADE_STRATEGY_ID}` +
+    ` candidates=[${config.daytrade.symbols.join(',')}]` +
+    ` K=${config.daytrade.k} budget=${config.daytrade.budget}` +
+    ` minRangePct=${config.daytrade.minRangePct} mode=${config.daytrade.mode}` +
     ` liveBrokerArmed=${config.daytrade.liveEnabled}`,
   );
 

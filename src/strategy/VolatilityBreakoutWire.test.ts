@@ -86,7 +86,7 @@ describe('VolatilityBreakoutWire integration', () => {
   it('places BUY when price crosses target inside entry window, qty = floor(budget/price)', async () => {
     const { repo, book, engine, logger } = wire();
     engine.register(new VolatilityBreakoutStrategy({
-      id: STRATEGY_ID, symbol: '011200', currency: 'KRW', mode: 'PAPER',
+      id: STRATEGY_ID, symbols: ['011200'], currency: 'KRW', mode: 'PAPER',
       k: 0.5, budget: BUDGET,
       getDailyRange: fakeRange,
     }));
@@ -110,7 +110,7 @@ describe('VolatilityBreakoutWire integration', () => {
   it('places SELL for full position at 15:11 KST (force liquidation at >= 15:10)', async () => {
     const { repo, book, engine, logger } = wire();
     engine.register(new VolatilityBreakoutStrategy({
-      id: STRATEGY_ID, symbol: '011200', currency: 'KRW', mode: 'PAPER',
+      id: STRATEGY_ID, symbols: ['011200'], currency: 'KRW', mode: 'PAPER',
       k: 0.5, budget: BUDGET,
       getDailyRange: fakeRange,
     }));
@@ -140,7 +140,7 @@ describe('VolatilityBreakoutWire integration', () => {
   it('does NOT re-enter after exit on the same day', async () => {
     const { repo: _repo, book, engine, logger } = wire();
     engine.register(new VolatilityBreakoutStrategy({
-      id: STRATEGY_ID, symbol: '011200', currency: 'KRW', mode: 'PAPER',
+      id: STRATEGY_ID, symbols: ['011200'], currency: 'KRW', mode: 'PAPER',
       k: 0.5, budget: BUDGET,
       getDailyRange: fakeRange,
     }));
@@ -184,7 +184,7 @@ describe('brokerFor routing', () => {
 
     const { engine, book, logger } = wire({ LIVE: fakeLiveBroker });
     engine.register(new VolatilityBreakoutStrategy({
-      id: STRATEGY_ID, symbol: '011200', currency: 'KRW',
+      id: STRATEGY_ID, symbols: ['011200'], currency: 'KRW',
       mode: 'PAPER', // PAPER → paperBroker, never fakeLiveBroker
       k: 0.5, budget: BUDGET,
       getDailyRange: fakeRange,

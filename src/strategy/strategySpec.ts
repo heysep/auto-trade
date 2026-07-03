@@ -11,7 +11,7 @@ import { VolatilityBreakoutStrategy } from './VolatilityBreakoutStrategy.js';
 export type StrategySpec =
   | { type: 'tsmom'; params: { lookback: number; threshold?: number; orderNotional: number } }
   | { type: 'composite'; combine: 'AND' | 'OR'; a: StrategySpec; b: StrategySpec; orderNotional: number }
-  | { type: 'volbreakout'; params: { k: number; budget: number } };
+  | { type: 'volbreakout'; params: { k: number; budget: number; symbols: string[]; minRangePct?: number } };
 
 /** Optional I/O dependencies injectable at factory time. */
 export interface BuildStrategyDeps {
@@ -73,11 +73,12 @@ export function buildStrategy(
     const getDailyRange = deps?.getDailyRange ?? (async () => undefined);
     return new VolatilityBreakoutStrategy({
       id,
-      symbol,
+      symbols: spec.params.symbols,
       currency,
       mode,
       k: spec.params.k,
       budget: spec.params.budget,
+      ...(spec.params.minRangePct !== undefined ? { minRangePct: spec.params.minRangePct } : {}),
       getDailyRange,
     });
   }

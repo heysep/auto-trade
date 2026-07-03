@@ -40,7 +40,7 @@ describe('buildStrategy', () => {
       resolve = res;
     });
     const s = buildStrategy(4, 'A005930', 'KRW', 'PAPER',
-      { type: 'volbreakout', params: { k: 0.5, budget: 100_000 } },
+      { type: 'volbreakout', params: { k: 0.5, budget: 100_000, symbols: ['A005930'] } },
       { getDailyRange: () => p },
     );
     expect(s.symbols.has('A005930')).toBe(true);
