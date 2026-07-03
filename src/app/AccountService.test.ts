@@ -1,4 +1,7 @@
 // TDD tests for AccountService (real Toss account holdings, read-only).
+// Fixtures mirror the LIVE-probed /api/v1/holdings shape (2026-07): summary figures are
+// nested { amount: { krw, usd }, rate? } objects; item money figures are nested objects
+// in the item's own currency.
 
 import { describe, it, expect, vi } from 'vitest';
 import { AccountService } from './AccountService.js';
@@ -17,9 +20,8 @@ function makeItem(overrides: Partial<TossHoldingsItem> = {}): TossHoldingsItem {
     quantity: '10',
     lastPrice: '110000',
     averagePurchasePrice: '100000',
-    marketValue: '1100000',
-    profitLoss: '100000',
-    cost: '1000000',
+    marketValue: { purchaseAmount: '1000000', amount: '1100000' },
+    profitLoss: { amount: '100000', rate: '0.1' },
     ...overrides,
   };
 }
@@ -27,9 +29,9 @@ function makeItem(overrides: Partial<TossHoldingsItem> = {}): TossHoldingsItem {
 function makeHoldings(overrides: Partial<TossHoldings> = {}): TossHoldings {
   return {
     totalPurchaseAmount: { krw: '1000000', usd: '0' },
-    marketValue: { krw: '1100000', usd: '0' },
-    profitLoss: { krw: '100000', usd: '0' },
-    dailyProfitLoss: { krw: '5000', usd: '0' },
+    marketValue: { amount: { krw: '1100000', usd: '0' } },
+    profitLoss: { amount: { krw: '100000', usd: '0' }, rate: '0.1' },
+    dailyProfitLoss: { amount: { krw: '5000', usd: '0' }, rate: '0.005' },
     items: [makeItem()],
     ...overrides,
   };
@@ -70,19 +72,41 @@ describe('AccountService', () => {
     expect(client.getAccounts).toHaveBeenCalledTimes(1);
   });
 
-  // 2. String fields are normalized to numbers
-  it('normalizes string summary fields to numbers', async () => {
+  // 2. String fields are normalized to numbers (KRW account)
+  it('normalizes nested summary fields to numbers (KRW account)', async () => {
     const client = fakeClient();
     const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
     const result = await svc.holdings();
 
+    expect(result.summary.currency).toBe('KRW');
     expect(result.summary.purchaseAmount).toBe(1_000_000);
     expect(result.summary.marketValue).toBe(1_100_000);
     expect(result.summary.profitLoss).toBe(100_000);
+    expect(result.summary.profitRate).toBeCloseTo(0.1);
     expect(result.summary.dailyProfitLoss).toBe(5_000);
+    expect(result.summary.dailyRate).toBeCloseTo(0.005);
   });
 
-  it('normalizes item quantity, avgPrice, lastPrice to numbers', async () => {
+  // 2b. USD account: every krw field is "0" → summary switches to the usd figures
+  it('falls back to USD summary figures when all krw fields are zero (US account)', async () => {
+    const client = fakeClient([42], makeHoldings({
+      totalPurchaseAmount: { krw: '0', usd: '11214.246' },
+      marketValue: { amount: { krw: '0', usd: '11174.47' } },
+      profitLoss: { amount: { krw: '0', usd: '-39.776' }, rate: '-0.0008' },
+      dailyProfitLoss: { amount: { krw: '0', usd: '158.32' }, rate: '0.0141' },
+    }));
+    const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
+    const result = await svc.holdings();
+
+    expect(result.summary.currency).toBe('USD');
+    expect(result.summary.purchaseAmount).toBeCloseTo(11_214.246);
+    expect(result.summary.marketValue).toBeCloseTo(11_174.47);
+    expect(result.summary.profitLoss).toBeCloseTo(-39.776);
+    expect(result.summary.dailyProfitLoss).toBeCloseTo(158.32);
+    expect(result.summary.dailyRate).toBeCloseTo(0.0141);
+  });
+
+  it('normalizes item fields to numbers (nested money objects)', async () => {
     const client = fakeClient();
     const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
     const result = await svc.holdings();
@@ -95,23 +119,40 @@ describe('AccountService', () => {
     expect(item.lastPrice).toBe(110_000);
     expect(item.marketValue).toBe(1_100_000);
     expect(item.profitLoss).toBe(100_000);
+    expect(item.currency).toBe('KRW');
   });
 
-  // 3. returnPct = profitLoss / cost when cost > 0
-  it('computes returnPct from cost when cost > 0', async () => {
+  // 3. returnPct prefers the Toss-reported rate
+  it('uses the Toss-reported profitLoss.rate as returnPct', async () => {
     const client = fakeClient([42], makeHoldings({
-      items: [makeItem({ profitLoss: '100000', cost: '1000000' })],
+      items: [makeItem({ profitLoss: { amount: '6.16', rate: '0.0028' } })],
     }));
     const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
     const result = await svc.holdings();
 
-    expect(result.items[0]?.returnPct).toBeCloseTo(0.1);
+    expect(result.items[0]?.returnPct).toBeCloseTo(0.0028);
   });
 
-  it('falls back to avgPrice*quantity as cost basis when cost=0', async () => {
-    // cost=0 but avgPrice=100000, quantity=10 → costBasis=1000000
+  it('falls back to profitLoss/purchaseAmount when rate is absent', async () => {
     const client = fakeClient([42], makeHoldings({
-      items: [makeItem({ cost: '0', averagePurchasePrice: '100000', quantity: '10', profitLoss: '50000' })],
+      items: [makeItem({
+        marketValue: { purchaseAmount: '1000000', amount: '1050000' },
+        profitLoss: { amount: '50000' },   // no rate
+      })],
+    }));
+    const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
+    const result = await svc.holdings();
+
+    expect(result.items[0]?.returnPct).toBeCloseTo(0.05);
+  });
+
+  it('falls back to avgPrice*quantity as cost basis when purchaseAmount is absent', async () => {
+    const client = fakeClient([42], makeHoldings({
+      items: [makeItem({
+        averagePurchasePrice: '100000', quantity: '10',
+        marketValue: { amount: '1050000' },      // no purchaseAmount
+        profitLoss: { amount: '50000' },          // no rate
+      })],
     }));
     const svc = new AccountService({ client, now: () => 0, ttlMs: 60_000 });
     const result = await svc.holdings();

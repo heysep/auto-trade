@@ -144,26 +144,35 @@ export interface TossHoldingsMoney {
   usd: string;
 }
 
-/** Individual holding item returned inside holdings.items[]. */
+/** Valued summary figure: nested per-currency amount + optional after-cost/rate (live-probed 2026-07). */
+export interface TossHoldingsValued {
+  amount: TossHoldingsMoney;
+  amountAfterCost?: TossHoldingsMoney;
+  rate?: string;
+  rateAfterCost?: string;
+}
+
+/** Individual holding item returned inside holdings.items[] (live-probed 2026-07). */
 export interface TossHoldingsItem {
   symbol: string;
   name: string;
   marketCountry: string;
-  currency: string;
+  currency: string;          // the item's own currency, e.g. 'USD'
   quantity: string;
   lastPrice: string;
   averagePurchasePrice: string;
-  marketValue: string;
-  profitLoss: string;
-  cost: string;
+  marketValue: { purchaseAmount?: string; amount: string; amountAfterCost?: string };
+  profitLoss: { amount: string; amountAfterCost?: string; rate?: string; rateAfterCost?: string };
+  dailyProfitLoss?: { amount: string; rate?: string };
+  cost?: unknown;            // commission/tax breakdown — unused
 }
 
 /** Unwrapped response from GET /api/v1/holdings (result envelope stripped by unwrap()). */
 export interface TossHoldings {
   totalPurchaseAmount: TossHoldingsMoney;
-  marketValue: TossHoldingsMoney;
-  profitLoss: TossHoldingsMoney;
-  dailyProfitLoss: TossHoldingsMoney;
+  marketValue: TossHoldingsValued;
+  profitLoss: TossHoldingsValued;
+  dailyProfitLoss: TossHoldingsValued;
   items: TossHoldingsItem[];
 }
 

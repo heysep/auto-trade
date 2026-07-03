@@ -1841,26 +1841,44 @@ function loadAccountHoldings() {
           return;
         }
         if (!data || !data.summary) return;
-        // Summary cards
+        // Summary cards — currency-aware (USD accounts report values in USD)
         var s = data.summary;
+        var moneyFmt = function(v, cur, signed) {
+          var n = Number(v) || 0;
+          var sign = signed && n >= 0 ? '+' : '';
+          if (cur === 'USD') return sign + '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          return sign + '₩' + Math.round(n).toLocaleString();
+        };
+        var rateFmt = function(r) {
+          var n = Number(r) || 0;
+          return ' (' + (n >= 0 ? '+' : '') + (n * 100).toFixed(2) + '%)';
+        };
+        var cur = s.currency || 'KRW';
         var pnl = Number(s.profitLoss) || 0;
         var daily = Number(s.dailyProfitLoss) || 0;
-        if (purchaseEl) purchaseEl.textContent = Math.round(Number(s.purchaseAmount) || 0).toLocaleString();
-        if (marketEl) marketEl.textContent = Math.round(Number(s.marketValue) || 0).toLocaleString();
+        if (purchaseEl) purchaseEl.textContent = moneyFmt(s.purchaseAmount, cur, false);
+        if (marketEl) marketEl.textContent = moneyFmt(s.marketValue, cur, false);
         if (pnlEl) {
-          pnlEl.textContent = (pnl >= 0 ? '+' : '') + Math.round(pnl).toLocaleString();
+          pnlEl.textContent = moneyFmt(pnl, cur, true) + rateFmt(s.profitRate);
           pnlEl.className = 'mval ' + (pnl > 0 ? 'bull' : pnl < 0 ? 'bear' : 'neu');
         }
         if (dailyEl) {
-          dailyEl.textContent = (daily >= 0 ? '+' : '') + Math.round(daily).toLocaleString();
+          dailyEl.textContent = moneyFmt(daily, cur, true) + rateFmt(s.dailyRate);
           dailyEl.className = 'mval ' + (daily > 0 ? 'bull' : daily < 0 ? 'bear' : 'neu');
         }
         summaryEl.style.display = 'flex';
         // Holdings table
         if (tbody && Array.isArray(data.items)) {
           var rows = '';
+          var itemMoney = function(v, itemCur, signed) {
+            var n = Number(v) || 0;
+            var sign = signed && n >= 0 ? '+' : '';
+            if (itemCur === 'USD') return sign + '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return sign + Math.round(n).toLocaleString();
+          };
           for (var i = 0; i < data.items.length; i++) {
             var it = data.items[i];
+            var iCur = it.currency || 'KRW';
             var itPnl = Number(it.profitLoss) || 0;
             var pnlCls = itPnl > 0 ? 'bull' : itPnl < 0 ? 'bear' : '';
             var retPct = Number(it.returnPct) || 0;
@@ -1870,10 +1888,10 @@ function loadAccountHoldings() {
               '<td><span style="font-weight:600">' + esc(it.name || it.symbol) + '</span>' +
               ' <span style="font-size:10px;color:var(--muted)">' + esc(it.symbol) + '</span></td>' +
               '<td class="num">' + esc(Math.round(Number(it.quantity) || 0).toLocaleString()) + '</td>' +
-              '<td class="num">' + esc(Math.round(Number(it.avgPrice) || 0).toLocaleString()) + '</td>' +
-              '<td class="num">' + esc(Math.round(Number(it.lastPrice) || 0).toLocaleString()) + '</td>' +
-              '<td class="num">' + esc(Math.round(Number(it.marketValue) || 0).toLocaleString()) + '</td>' +
-              '<td class="num ' + esc(pnlCls) + '">' + esc((itPnl >= 0 ? '+' : '') + Math.round(itPnl).toLocaleString()) + '</td>' +
+              '<td class="num">' + esc(itemMoney(it.avgPrice, iCur, false)) + '</td>' +
+              '<td class="num">' + esc(itemMoney(it.lastPrice, iCur, false)) + '</td>' +
+              '<td class="num">' + esc(itemMoney(it.marketValue, iCur, false)) + '</td>' +
+              '<td class="num ' + esc(pnlCls) + '">' + esc(itemMoney(itPnl, iCur, true)) + '</td>' +
               '<td class="num ' + esc(pnlCls) + '">' + esc(retStr) + '</td>' +
               '</tr>';
           }

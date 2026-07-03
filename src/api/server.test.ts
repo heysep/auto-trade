@@ -917,8 +917,8 @@ describe('GET /api/performance', () => {
 
   it('GET /api/account/holdings returns 200 with holdings data when account service is wired', async () => {
     const fakeHoldings: AccountHoldingsView = {
-      summary: { purchaseAmount: 1_000_000, marketValue: 1_100_000, profitLoss: 100_000, dailyProfitLoss: 5_000 },
-      items: [{ symbol: 'A001', name: '종목A', quantity: 10, avgPrice: 100_000, lastPrice: 110_000, marketValue: 1_100_000, profitLoss: 100_000, returnPct: 0.1 }],
+      summary: { currency: 'KRW', purchaseAmount: 1_000_000, marketValue: 1_100_000, profitLoss: 100_000, profitRate: 0.1, dailyProfitLoss: 5_000, dailyRate: 0.005 },
+      items: [{ symbol: 'A001', name: '종목A', currency: 'KRW', quantity: 10, avgPrice: 100_000, lastPrice: 110_000, marketValue: 1_100_000, profitLoss: 100_000, returnPct: 0.1 }],
     };
     const account = { holdings: vi.fn().mockResolvedValue(fakeHoldings) } as unknown as AccountService;
     const { app } = harness({ account });

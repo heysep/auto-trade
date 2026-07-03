@@ -8,25 +8,29 @@ import type { TossApiClient } from '../toss/TossApiClient.js';
 // ---------------------------------------------------------------------------
 
 export interface AccountHoldingsSummary {
-  /** 매입금액 (KRW) */
+  /** Currency the summary figures are denominated in — USD accounts report 0 in the krw fields. */
+  currency: 'KRW' | 'USD';
   purchaseAmount: number;
-  /** 평가금액 (KRW) */
   marketValue: number;
-  /** 평가손익 (KRW) */
   profitLoss: number;
-  /** 일간손익 (KRW) */
+  /** Overall return rate as a fraction (e.g. -0.0008). */
+  profitRate: number;
   dailyProfitLoss: number;
+  /** Daily return rate as a fraction. */
+  dailyRate: number;
 }
 
 export interface AccountHoldingsItem {
   symbol: string;
   name: string;
+  /** The item's own currency (e.g. 'USD'). */
+  currency: string;
   quantity: number;
   avgPrice: number;
   lastPrice: number;
   marketValue: number;
   profitLoss: number;
-  /** profitLoss / costBasis. costBasis = cost field if >0, else avgPrice*qty. */
+  /** Return rate as a fraction — Toss-reported rate, falling back to profitLoss/purchaseAmount. */
   returnPct: number;
 }
 
@@ -126,11 +130,16 @@ export class AccountService {
       return Number.isFinite(v) ? v : 0;
     };
 
+    // USD-denominated accounts report 0 in every krw field — pick the non-zero currency.
+    const cur: 'krw' | 'usd' = toNum(raw.totalPurchaseAmount.krw) !== 0 ? 'krw' : 'usd';
     const summary: AccountHoldingsSummary = {
-      purchaseAmount: toNum(raw.totalPurchaseAmount.krw),
-      marketValue: toNum(raw.marketValue.krw),
-      profitLoss: toNum(raw.profitLoss.krw),
-      dailyProfitLoss: toNum(raw.dailyProfitLoss.krw),
+      currency: cur === 'krw' ? 'KRW' : 'USD',
+      purchaseAmount: toNum(raw.totalPurchaseAmount[cur]),
+      marketValue: toNum(raw.marketValue.amount?.[cur] ?? ''),
+      profitLoss: toNum(raw.profitLoss.amount?.[cur] ?? ''),
+      profitRate: toNum(raw.profitLoss.rate ?? ''),
+      dailyProfitLoss: toNum(raw.dailyProfitLoss.amount?.[cur] ?? ''),
+      dailyRate: toNum(raw.dailyProfitLoss.rate ?? ''),
     };
 
     const items: AccountHoldingsItem[] = [];
@@ -145,17 +154,22 @@ export class AccountService {
         continue;
       }
 
-      const marketValue = toNum(item.marketValue);
-      const profitLoss = toNum(item.profitLoss);
-      const cost = Number(item.cost);
+      // Item money figures are nested objects in the item's own currency (live-probed).
+      const marketValue = toNum(item.marketValue?.amount ?? '');
+      const profitLoss = toNum(item.profitLoss?.amount ?? '');
+      const reportedRate = item.profitLoss?.rate;
 
-      // cost field → avgPrice*qty fallback when cost is missing/zero.
-      const costBasis = Number.isFinite(cost) && cost > 0 ? cost : avgPrice * quantity;
-      const returnPct = costBasis > 0 ? profitLoss / costBasis : 0;
+      // Prefer the Toss-reported rate; fall back to profitLoss / purchaseAmount (then avgPrice*qty).
+      const purchase = toNum(item.marketValue?.purchaseAmount ?? '');
+      const costBasis = purchase > 0 ? purchase : avgPrice * quantity;
+      const returnPct = reportedRate !== undefined && reportedRate !== ''
+        ? toNum(reportedRate)
+        : (costBasis > 0 ? profitLoss / costBasis : 0);
 
       items.push({
         symbol: item.symbol,
         name: item.name,
+        currency: item.currency || 'KRW',
         quantity,
         avgPrice,
         lastPrice,
