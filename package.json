@@ -4,9 +4,12 @@
   "private": true,
   "description": "Toss Securities Open API paper-trading / auto-trading platform",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "fastify": "^5.1.0"
+    "fastify": "^5.1.0",
+    "fflate": "^0.8.3"
   },
   "scripts": {
     "probe": "node scripts/probe-live-spec.mjs",
@@ -16,9 +19,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/node": "^20.16.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
-    "@types/node": "^20.16.0"
+    "vitest": "^2.1.0"
   }
 }

@@ -39,4 +39,39 @@ describe('MarketCalendar', () => {
     await svc.isMarketOpen('KR');
     expect(fetchCalendar).toHaveBeenCalledTimes(2);     // cache expired -> refetch
   });
+
+  describe('isTradingDaySync', () => {
+    it('returns true when cached calendar has a regularMarket session', async () => {
+      const fetchCalendar = vi.fn(async () => OPEN);
+      const svc = new MarketCalendarService({ fetchCalendar, now: () => at('2026-06-30T03:00:00Z') });
+      await svc.isMarketOpen('KR');  // warm the cache
+      expect(svc.isTradingDaySync('KR')).toBe(true);
+    });
+
+    it('returns false when cached calendar has no regularMarket session (holiday)', async () => {
+      const holiday = cal();  // no session
+      const fetchCalendar = vi.fn(async () => holiday);
+      const svc = new MarketCalendarService({ fetchCalendar, now: () => at('2026-06-30T03:00:00Z') });
+      await svc.isMarketOpen('KR');  // warm the cache
+      expect(svc.isTradingDaySync('KR')).toBe(false);
+    });
+
+    it('returns false on Sunday when cache is empty', () => {
+      // 2026-06-28 is a Sunday
+      const svc = new MarketCalendarService({
+        fetchCalendar: vi.fn(async () => OPEN),
+        now: () => at('2026-06-28T12:00:00Z'),
+      });
+      expect(svc.isTradingDaySync('KR')).toBe(false);
+    });
+
+    it('returns true on a weekday when cache is empty', () => {
+      // 2026-06-30 is a Tuesday
+      const svc = new MarketCalendarService({
+        fetchCalendar: vi.fn(async () => OPEN),
+        now: () => at('2026-06-30T12:00:00Z'),
+      });
+      expect(svc.isTradingDaySync('KR')).toBe(true);
+    });
+  });
 });

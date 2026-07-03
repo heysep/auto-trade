@@ -212,3 +212,18 @@ GET  /api/v1/orders         POST /api/v1/orders
 > 주문 수정/취소 경로는 openapi.json 14 paths에 미노출 — POST `/orders/{id}/modify|cancel` 추정이나
 > **실거래(Phase 5) 전 openapi.json에서 재확인 필요**. 시세 일부 경로명도 README 추정과 다름
 > (예: `/api/v1/trades`, `/api/v1/price-limits`, `/api/v1/exchange-rate`, `/api/v1/market-calendar/{KR|US}`).
+
+---
+
+## 9. 추가 확정 사항 (openapi.json 2026-07)
+
+### GET /api/v1/stocks ✅ CONFIRMED
+- `symbols` 쿼리 파라미터 **REQUIRED** (쉼표구분, 최대 200). 전체목록/검색 엔드포인트 아님.
+- 응답: 배열 `[{ symbol, name, englishName?, isinCode?, market, securityType?, currency?, ... }]`
+- **Symbol 검색은 Toss backing 없음** → 정적 KRX 목록(`src/market/krxSymbols.ts`)으로 로컬 검색.
+
+### GET /api/v1/candles ✅ CONFIRMED
+- 파라미터: `symbol` (필수), `interval` (필수, 정확히 `'1m'` | `'1d'` 소문자), `count` (선택, 기본100, 최대200), `before` (선택, ISO), `adjusted` (선택, bool, 기본 true)
+- 응답: `{ candles: [{ timestamp: string /*ISO 8601*/, openPrice: string, highPrice: string, lowPrice: string, closePrice: string, volume?: string, currency: string }], nextBefore: string | null }`
+- 숫자값 전부 **string**. `request<TossCandlePage>()` 이후 `.candles` 추출.
+- UI 노출 시 `ChartCandle` (`{ time: epochSeconds, open, high, low, close: number }`) 로 정규화.

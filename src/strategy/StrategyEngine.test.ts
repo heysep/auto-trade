@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { StrategyEngine } from './StrategyEngine.js';
-import { ThresholdStrategy } from './ThresholdStrategy.js';
+import { TimeSeriesMomentumStrategy } from './TimeSeriesMomentumStrategy.js';
 import { OrderManager } from '../order/OrderManager.js';
 import { RiskManager, type RiskContext } from '../risk/RiskManager.js';
 import { PaperBroker } from '../broker/PaperBroker.js';
@@ -24,7 +24,7 @@ function wire() {
     return {
       mode: strategy.mode, status: 'PAPER_TESTING', capital: 2_000_000,
       limits: { maxPositionPct: 100, dailyMaxLoss: 1e9, maxConsecutiveLosses: 99 },
-      positions: repo.getPositions(strategy.id, strategy.mode),   // portfolio-wide, not just this symbol
+      positions: repo.getPositions(strategy.id, strategy.mode),
       openOrdersForSymbol: repo.getOpenOrdersBySymbol(symbol, strategy.mode).length,
       dailyRealizedPnl: 0, consecutiveLosses: 0,
     };
@@ -40,31 +40,48 @@ function wire() {
 }
 
 describe('StrategyEngine integration', () => {
-  it('runs a full buy-low / sell-high cycle through risk and the paper broker', async () => {
+  it('runs a full momentum buy / exit cycle through risk and the paper broker', async () => {
     const { repo, book, engine, logger } = wire();
-    engine.register(new ThresholdStrategy({
+    engine.register(new TimeSeriesMomentumStrategy({
       id: 1, symbol: '005930', currency: 'KRW', mode: 'PAPER',
-      buyBelow: 70_000, sellAbove: 80_000, orderNotional: 700_000,
+      lookback: 2, orderNotional: 700_000,
     }));
 
-    // Tick below buyBelow -> entry
-    book.set(q(69_000));
-    await engine.onTick(q(69_000));
+    // lookback=2 → need 3 bars warmup before first signal
+    // Tick 1: NEUTRAL (1 bar seen)
+    book.set(q(50_000));
+    await engine.onTick(q(50_000));
+    expect(logger.ofType('ORDER_PLACED')).toHaveLength(0);
+
+    // Tick 2: NEUTRAL (2 bars seen)
+    book.set(q(60_000, T + 1000));
+    await engine.onTick(q(60_000, T + 1000));
+    expect(logger.ofType('ORDER_PLACED')).toHaveLength(0);
+
+    // Tick 3: prices=[50k,60k,70k] → past=50k, return=+40% → BULLISH → BUY qty=floor(700k/70k)=10
+    book.set(q(70_000, T + 2000));
+    await engine.onTick(q(70_000, T + 2000));
     let pos = repo.getPosition(1, '005930', 'PAPER')!;
-    expect(pos.quantity).toBe(10);                    // floor(700000/69000)
+    expect(pos.quantity).toBe(10);
     expect(logger.ofType('ORDER_PLACED')).toHaveLength(1);
 
-    // Tick still low -> no action (already long, below sell level)
-    book.set(q(69_500, T + 1000));
-    await engine.onTick(q(69_500, T + 1000));
+    // Tick 4: prices=[60k,70k,90k] → past=60k, return=+50% → BULLISH, held>0 → null
+    book.set(q(90_000, T + 3000));
+    await engine.onTick(q(90_000, T + 3000));
     expect(logger.ofType('ORDER_PLACED')).toHaveLength(1);
 
-    // Tick above sellAbove -> exit whole position
-    book.set(q(81_000, T + 2000));
-    await engine.onTick(q(81_000, T + 2000));
+    // Tick 5: prices=[70k,90k,100k] → past=70k, return=+42.8% → BULLISH, held>0 → null
+    book.set(q(100_000, T + 4000));
+    await engine.onTick(q(100_000, T + 4000));
+    expect(logger.ofType('ORDER_PLACED')).toHaveLength(1);
+
+    // Tick 6: prices=[90k,100k,80k] → past=90k, return=(80k-90k)/90k=-11% → BEARISH → SELL all at 80k
+    // bought at 70k, sold at 80k → realizedPnl = (80k-70k)*10 = 100k > 0
+    book.set(q(80_000, T + 5000));
+    await engine.onTick(q(80_000, T + 5000));
     pos = repo.getPosition(1, '005930', 'PAPER')!;
     expect(pos.quantity).toBe(0);
-    expect(pos.realizedPnl).toBeGreaterThan(0);       // sold higher than bought
+    expect(pos.realizedPnl).toBeGreaterThan(0);
     expect(logger.ofType('ORDER_PLACED')).toHaveLength(2);
   });
 

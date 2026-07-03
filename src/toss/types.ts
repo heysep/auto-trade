@@ -89,6 +89,48 @@ export interface TossOrdersList {
   hasNext?: boolean;
 }
 
+// --- Symbol catalog (GET /api/v1/stocks) ---
+// Confirmed via openapi.json 2026-07. `symbols` query param REQUIRED (comma-separated).
+
+export interface TossStock {
+  symbol: string;
+  name: string;
+  market: string;
+  englishName?: string;
+  currency?: string;
+  /** Total shares outstanding (number of issued shares). Parsed from the API string field. */
+  sharesOutstanding?: number;
+  /** KRX sector classification (Korean label, e.g. '반도체', '자동차'). */
+  sector?: string;
+}
+
+// --- Candle chart (GET /api/v1/candles) ---
+// Confirmed via openapi.json 2026-07. interval enum: '1m' | '1d'. Numbers are strings.
+
+export interface TossCandle {
+  timestamp: string;    // ISO 8601, e.g. "2026-03-25T09:00:00+09:00"
+  openPrice: string;
+  highPrice: string;
+  lowPrice: string;
+  closePrice: string;
+  volume?: string;
+}
+
+// Paged response wrapper from GET /api/v1/candles (our request() unwraps {result} envelope).
+export interface TossCandlePage {
+  candles: TossCandle[];
+  nextBefore?: string | null;
+}
+
+// Normalised, UI-facing candle. time = epoch SECONDS (for lightweight-charts).
+export interface ChartCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 // --- Market calendar (regular/pre/after sessions are startTime/endTime ISO pairs) ---
 
 export interface TossSession { startTime: string; endTime: string; }

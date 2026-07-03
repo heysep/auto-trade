@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { TradingSystem } from '../app/TradingSystem.js';
 import type { StrategyStatus, TradingMode } from '../domain/types.js';
+import type { StrategySpec } from '../strategy/strategySpec.js';
+import { DASHBOARD_HTML } from './dashboard.js';
 
 const STATUSES: readonly StrategyStatus[] = [
   'DRAFT', 'BACKTESTING', 'PAPER_TESTING', 'APPROVED', 'LIVE', 'PAUSED', 'REJECTED',
@@ -25,7 +27,7 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
   // Auth on the control plane (mutations). Reads stay open.
   if (opts.authToken) {
     app.addHook('onRequest', async (req, reply) => {
-      if (req.method === 'POST' || req.method === 'PATCH') {
+      if (req.method === 'POST' || req.method === 'PATCH' || req.method === 'DELETE') {
         if (req.headers['x-api-token'] !== opts.authToken) {
           return reply.code(401).send({ error: 'unauthorized' });
         }
@@ -53,6 +55,24 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     const id = Number((req.params as { id: string }).id);
     const s = Number.isInteger(id) ? system.registry.get(id) : undefined;
     return s ?? reply.code(404).send({ error: 'strategy not found' });
+  });
+
+  app.post('/api/strategies', async (req, reply) => {
+    const body = (req.body ?? {}) as { symbol?: string; spec?: StrategySpec; name?: string };
+    if (!body.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    if (!body.spec) return reply.code(400).send({ error: 'spec is required' });
+    if (!body.name) return reply.code(400).send({ error: 'name is required' });
+    const result = system.deploy({ symbol: body.symbol, spec: body.spec, name: body.name });
+    if (!result.ok) return reply.code(result.code).send({ error: result.error });
+    return reply.code(201).send(result.view);
+  });
+
+  app.delete('/api/strategies/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid strategy id' });
+    const ok = system.undeploy(id);
+    if (!ok) return reply.code(404).send({ error: 'strategy not found' });
+    return { ok: true };
   });
 
   app.patch('/api/strategies/:id/status', async (req, reply) => {
@@ -100,6 +120,29 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return system.quotes(symbols);
   });
 
+  // --- symbol catalog ---
+  app.get('/api/market/symbols', async (req) => {
+    const q = req.query as { q?: string; limit?: string };
+    const query = q.q ?? '';
+    const rawLimit = q.limit !== undefined ? Number(q.limit) : undefined;
+    const limit = rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
+    if (limit !== undefined) {
+      return system.searchSymbols(query, limit);
+    }
+    return system.searchSymbols(query);
+  });
+
+  // --- candles ---
+  app.get('/api/market/candles', async (req, reply) => {
+    const q = req.query as { symbol?: string; interval?: string };
+    if (!q.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    const interval = q.interval ?? '1d';
+    if (interval !== '1m' && interval !== '1d') {
+      return reply.code(400).send({ error: "interval must be '1m' or '1d'" });
+    }
+    return system.candles(q.symbol, interval);
+  });
+
   // --- logs ---
   app.get('/api/logs', async (req) => {
     const q = req.query as { limit?: string };
@@ -121,72 +164,127 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return system.haltStatus();
   });
 
+  // --- backtest ---
+  app.post('/api/backtest', async (req, reply) => {
+    const body = (req.body ?? {}) as { symbol?: string; spec?: StrategySpec; interval?: string; capital?: number };
+    if (!body.symbol) return reply.code(400).send({ error: 'symbol is required' });
+    if (!body.spec) return reply.code(400).send({ error: 'spec is required' });
+    return system.backtest({
+      symbol: body.symbol,
+      spec: body.spec,
+      ...(body.interval !== undefined ? { interval: body.interval } : {}),
+      ...(body.capital !== undefined ? { capital: body.capital } : {}),
+    });
+  });
+
+  // --- factor backtest ---
+  app.post('/api/factors/backtest', async (req, reply) => {
+    const body = (req.body ?? {}) as { topN?: unknown; rebalanceEvery?: unknown; startCapital?: unknown };
+
+    if (body.topN !== undefined) {
+      const n = Number(body.topN);
+      if (!Number.isInteger(n) || n <= 0) {
+        return reply.code(400).send({ error: 'topN must be a positive integer' });
+      }
+      if (n > 50) {
+        return reply.code(400).send({ error: 'topN must be ≤ 50' });
+      }
+    }
+    if (body.rebalanceEvery !== undefined) {
+      const n = Number(body.rebalanceEvery);
+      if (!Number.isInteger(n) || n <= 0) {
+        return reply.code(400).send({ error: 'rebalanceEvery must be a positive integer' });
+      }
+      if (n > 250) {
+        return reply.code(400).send({ error: 'rebalanceEvery must be ≤ 250' });
+      }
+    }
+    if (body.startCapital !== undefined) {
+      const n = Number(body.startCapital);
+      if (!Number.isFinite(n) || n <= 0) {
+        return reply.code(400).send({ error: 'startCapital must be a positive number' });
+      }
+      if (n > 1e12) {
+        return reply.code(400).send({ error: 'startCapital must be ≤ 1e12' });
+      }
+    }
+
+    const params = {
+      ...(body.topN !== undefined ? { topN: Number(body.topN) } : {}),
+      ...(body.rebalanceEvery !== undefined ? { rebalanceEvery: Number(body.rebalanceEvery) } : {}),
+      ...(body.startCapital !== undefined ? { startCapital: Number(body.startCapital) } : {}),
+    };
+
+    const result = Object.keys(params).length > 0
+      ? await system.factorBacktest(params)
+      : await system.factorBacktest();
+
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
+  // --- factor ranking ---
+  app.get('/api/factors/ranking', async (req, reply) => {
+    const q = req.query as { limit?: string };
+    let limit: number | undefined;
+    if (q.limit !== undefined) {
+      const n = Number(q.limit);
+      if (Number.isInteger(n) && n > 0) limit = n;
+    }
+    const result = limit !== undefined
+      ? await system.factorRanking(limit)
+      : await system.factorRanking();
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
+  // --- factor portfolio rebalance ---
+  app.post('/api/factors/rebalance', async (_req, reply) => {
+    const result = await system.rebalanceFactorPortfolio();
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
+  // --- auto-rebalance scheduler control ---
+  app.get('/api/factors/autorebalance', async (_req, reply) => {
+    const result = system.autoRebalanceStatus();
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
+  app.post('/api/factors/autorebalance', async (req, reply) => {
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') {
+      return reply.code(400).send({ error: 'enabled (boolean) is required' });
+    }
+    const result = system.setAutoRebalance(body.enabled);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
+  app.get('/api/performance', async (req, reply) => {
+    const q = (req.query as Record<string, string | undefined>);
+    const rawId = q['strategyId'];
+    const id = rawId !== undefined ? Number(rawId) : NaN;
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.code(400).send({ error: 'strategyId must be a positive integer' });
+    }
+    const mode = parseModeOr(q['mode'], reply);
+    if (mode === BAD) return;
+    const result = system.performance(id, mode);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
   return app;
 }
 
-const DASHBOARD_HTML = `<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>auto-trading</title>
-<style>
-  :root { color-scheme: dark; }
-  body { margin:0; background:#0b0e14; color:#c8d3e0; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-  header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid #1c2230; }
-  header h1 { font-size:15px; margin:0; letter-spacing:.04em; color:#e6edf6; }
-  #halt { margin-left:auto; padding:4px 10px; border-radius:6px; font-weight:600; }
-  .ok { background:#10331f; color:#5ad17f; } .stopped { background:#3a1418; color:#ff6b78; }
-  button { background:#7a1622; color:#fff; border:0; padding:7px 14px; border-radius:6px; cursor:pointer; font:inherit; font-weight:600; }
-  button.resume { background:#143a22; color:#5ad17f; }
-  main { padding:20px; display:grid; gap:22px; max-width:1100px; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.1em; color:#7d8aa0; margin:0 0 8px; }
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:6px 10px; border-bottom:1px solid #161b27; }
-  th { color:#7d8aa0; font-weight:500; } td.num { text-align:right; font-variant-numeric:tabular-nums; }
-  .pos { color:#5ad17f; } .neg { color:#ff6b78; }
-</style></head>
-<body>
-<header><h1>auto-trading</h1><span id="halt" class="ok">…</span>
-  <button id="stop">긴급 정지</button></header>
-<main>
-  <section><h2>전략</h2><table id="strategies"><thead><tr><th>ID</th><th>이름</th><th>상태</th><th>모드</th><th>종목</th></tr></thead><tbody></tbody></table></section>
-  <section><h2>포지션 (paper)</h2><table id="positions"><thead><tr><th>전략</th><th>종목</th><th class="num">수량</th><th class="num">평균가</th><th class="num">실현손익</th></tr></thead><tbody></tbody></table></section>
-  <section><h2>최근 로그</h2><table id="logs"><thead><tr><th>시각</th><th>유형</th><th>메시지</th></tr></thead><tbody></tbody></table></section>
-</main>
-<script>
-const $ = (s) => document.querySelector(s);
-const j = (u) => fetch(u).then(r => r.json());
-// Escape ALL interpolated values — feed-derived strings (symbols, error messages) reach
-// these cells and would otherwise be a stored-XSS sink via innerHTML.
-const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const cell = (v, cls='') => '<td class="' + cls + '">' + esc(v ?? '') + '</td>';
-const numCls = (n) => Number(n) > 0 ? 'num pos' : Number(n) < 0 ? 'num neg' : 'num';
-async function refresh() {
-  try {
-    const [halt, strats, pos, logs] = await Promise.all([
-      j('/api/halt'), j('/api/strategies'), j('/api/positions'), j('/api/logs?limit=20')]);
-    const h = $('#halt');
-    h.textContent = halt.halted ? ('정지됨: ' + (halt.reason||'')) : '정상';
-    h.className = halt.halted ? 'stopped' : 'ok';
-    $('#stop').textContent = halt.halted ? '재개' : '긴급 정지';
-    $('#stop').className = halt.halted ? 'resume' : '';
-    $('#strategies tbody').innerHTML = strats.map(s =>
-      '<tr>'+cell(s.id)+cell(s.name)+cell(s.status)+cell(s.mode)+cell((s.symbols||[]).join(', '))+'</tr>').join('');
-    $('#positions tbody').innerHTML = pos.map(p =>
-      '<tr>'+cell(p.strategyId)+cell(p.symbol)+cell(p.quantity,'num')+cell(p.avgPrice,'num')+cell(p.realizedPnl,numCls(p.realizedPnl))+'</tr>').join('');
-    $('#logs tbody').innerHTML = logs.slice().reverse().map(l =>
-      '<tr>'+cell(new Date(l.at).toLocaleTimeString())+cell(l.type)+cell(l.message||'')+'</tr>').join('');
-  } catch (e) { /* transient */ }
-}
-$('#stop').onclick = async () => {
-  const halted = $('#halt').className === 'stopped';
-  if (!halted && !confirm('모든 신규 주문을 즉시 차단합니다. 계속?')) return;
-  const token = localStorage.getItem('apiToken') || '';
-  await fetch(halted ? '/api/resume' : '/api/emergency-stop', {
-    method:'POST', headers:{'content-type':'application/json','x-api-token':token},
-    body: JSON.stringify(halted ? {} : {reason:'dashboard'}) });
-  refresh();
-};
-refresh(); setInterval(refresh, 3000);
-</script></body></html>`;
 
 const BAD = Symbol('bad-mode');
 
