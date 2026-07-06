@@ -25,7 +25,7 @@ import { makeDailyRangeProvider } from './market/dailyRange.js';
 import type { Broker } from './broker/Broker.js';
 import { HaltSwitch } from './app/HaltSwitch.js';
 import { FileHaltStore } from './app/HaltStore.js';
-import { TradingSystem, FACTOR_PORTFOLIO_STRATEGY_ID, DCA_STRATEGY_ID } from './app/TradingSystem.js';
+import { TradingSystem, FACTOR_PORTFOLIO_STRATEGY_ID, DCA_STRATEGY_ID, inferCurrency } from './app/TradingSystem.js';
 import { DcaPlanStore } from './dca/DcaPlanStore.js';
 import { DcaPlanRunner } from './dca/DcaPlanRunner.js';
 import { DcaScheduler } from './dca/DcaScheduler.js';
@@ -397,6 +397,8 @@ export function bootstrap() {
       return pos?.quantity ?? 0;
     },
     submitBuy: async (symbol, usdAmount, price) => {
+      // M1: infer currency from symbol format (6-digit all-numeric → KRW, else USD).
+      const currency = inferCurrency(symbol);
       // Ensure a quote exists before calling handleIntent.
       let quote = book.getQuote(symbol);
       if (quote === undefined) {
@@ -404,16 +406,18 @@ export function bootstrap() {
         for (const item of items) {
           const last = Number(item.lastPrice);
           if (Number.isFinite(last) && last > 0 && item.symbol === symbol) {
-            book.set({ symbol: item.symbol, currency: 'KRW', bid: last, ask: last, last, ts: Date.now() });
+            book.set({ symbol: item.symbol, currency, bid: last, ask: last, last, ts: Date.now() });
           }
         }
         quote = book.getQuote(symbol);
       }
       if (quote === undefined) throw new Error(`[dca] no quote for ${symbol}`);
       const quantity = usdAmount / price;
+      // Use correct currency on the strategy object so the stored order reflects USD/KRW correctly.
+      const strategyForOrder = { ...dcaStrategy, currency } as typeof dcaStrategy;
       const outcome = await orderManager.handleIntent(
-        dcaStrategy,
-        { side: 'BUY', quantity, orderType: 'MARKET', reason: `DCA buy ${symbol} ₩${usdAmount}` },
+        strategyForOrder,
+        { side: 'BUY', quantity, orderType: 'MARKET', reason: `DCA buy ${symbol} ${currency === 'USD' ? '$' : '₩'}${usdAmount}` },
         quote,
       );
       if (outcome.status !== 'placed') {
@@ -425,9 +429,32 @@ export function bootstrap() {
     },
     isHalted: () => haltSwitch.halted,
   });
+  // C1: prefetch-aware contribute function for the scheduler tick.
+  // Mirrors TradingSystem.dcaContribute: fetches live price when the QuoteBook has no
+  // fresh quote for the DCA symbol (US ETFs are never in the MarketDataWorker watch list
+  // until activation wires them via watchList).
+  const FRESH_MS_DCA = 10_000;
+  const dcaContributeForScheduler = async (plan: import('./dca/DcaPlanRunner.js').DcaActivePlan) => {
+    const existing = book.getQuote(plan.symbol);
+    if (!existing || Date.now() - existing.ts >= FRESH_MS_DCA) {
+      try {
+        const items = await client.getPrices([plan.symbol]);
+        for (const item of items) {
+          if (item.symbol !== plan.symbol) continue;
+          const last = Number(item.lastPrice);
+          if (!Number.isFinite(last) || last <= 0) continue;
+          const currency = inferCurrency(item.symbol);
+          book.set({ symbol: item.symbol, currency, bid: last, ask: last, last, ts: Date.now() });
+        }
+      } catch { /* swallow — runner returns 'no price' if book stays empty */ }
+    }
+    return dcaRunner.contribute(plan);
+  };
+
   const dcaScheduler = new DcaScheduler({
     store: dcaStore,
     runner: dcaRunner,
+    contribute: dcaContributeForScheduler,
     isHalted: () => haltSwitch.halted,
     intervalMs: DCA_INTERVAL_MS,
     logger: { log: (e) => logger.log({ type: 'DCA_ERROR', message: String(e), at: Date.now() }) },
@@ -452,6 +479,7 @@ export function bootstrap() {
     dca: dcaService,
     dcaStore,
     dcaRunner,
+    watchList,
   });
   systemRef = system;
 

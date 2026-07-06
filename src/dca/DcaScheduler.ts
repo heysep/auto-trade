@@ -6,6 +6,10 @@ import type { DcaPlanRunner } from './DcaPlanRunner.js';
 export interface DcaSchedulerDeps {
   store: DcaPlanStore;
   runner: DcaPlanRunner;
+  /** Optional per-plan contribution hook. When set, called instead of runner.contribute().
+   *  Use this to inject a prefetch-aware path (e.g. fetching the live price before
+   *  contributing when the symbol is not yet in the QuoteBook). */
+  contribute?: (plan: import('./DcaPlanRunner.js').DcaActivePlan) => Promise<{ invested: number; shares: number; price: number } | { skipped: string }>;
   isHalted: () => boolean;
   intervalMs: number;
   logger?: { log: (e: unknown) => void };
@@ -82,7 +86,9 @@ export class DcaScheduler {
         if (!this.deps.runner.isDue(plan, now)) continue;
 
         try {
-          const result = await this.deps.runner.contribute(plan);
+          const result = this.deps.contribute !== undefined
+            ? await this.deps.contribute(plan)
+            : await this.deps.runner.contribute(plan);
 
           if ('skipped' in result) {
             // Log skips only in debug context; not an error.

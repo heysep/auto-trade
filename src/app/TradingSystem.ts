@@ -22,6 +22,16 @@ import { validatePlan } from '../dca/dcaPlanValidation.js';
 import type { DcaPlan } from '../dca/DcaBacktest.js';
 import type { DcaPlanStore } from '../dca/DcaPlanStore.js';
 import type { DcaPlanRunner, DcaActivePlan } from '../dca/DcaPlanRunner.js';
+import type { WatchList } from '../market/WatchList.js';
+
+/**
+ * Infer quote/order currency from symbol format.
+ * Korean stock codes are exactly 6 decimal digits (e.g. "005930").
+ * Everything else (US tickers like "SPY") is USD.
+ */
+export function inferCurrency(symbol: string): 'KRW' | 'USD' {
+  return /^\d{6}$/.test(symbol) ? 'KRW' : 'USD';
+}
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -86,6 +96,9 @@ export interface TradingSystemDeps {
   dcaStore?: DcaPlanStore;
   /** DCA plan runner (contribute logic). Omitted => runDcaNow() returns 503. */
   dcaRunner?: DcaPlanRunner;
+  /** Symbol watch list. When wired, activateDcaPlan() registers the plan symbol so the
+   *  market worker starts quoting it for future scheduled contributions. */
+  watchList?: WatchList;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -408,7 +421,13 @@ export class TradingSystem {
     try {
       return await svc.compare(compareInput);
     } catch (err) {
-      console.error('[dca] compare failed:', err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      // M3: empty window is a client error (bad from/to range) — return 400 so the
+      // caller knows to widen the date range, not retry.
+      if (msg.includes('no price data') && msg.includes('in the requested window')) {
+        return { error: msg, code: 400 };
+      }
+      console.error('[dca] compare failed:', msg);
       return { error: 'upstream fetch failed', code: 502 };
     }
   }
@@ -485,13 +504,19 @@ export class TradingSystem {
     if (dipExtra !== undefined)       planObj.dipExtra       = dipExtra;
     if (dipDrawdownPct !== undefined) planObj.dipDrawdownPct = dipDrawdownPct;
 
+    const symbol = input.symbol.trim();
     const active = store.add({
-      symbol:        input.symbol.trim(),
+      symbol,
       plan:          planObj,
       startedAt:     this.now(),
       totalInvested: 0,
       shares:        0,
     });
+
+    // Register symbol in watchList so the market worker starts quoting it for
+    // future scheduled contributions (mirrors how factor deploy adds symbols).
+    const market = inferCurrency(symbol) === 'KRW' ? 'KR' as const : 'US' as const;
+    this.deps.watchList?.add({ symbol, market });
 
     return active;
   }
@@ -533,7 +558,7 @@ export class TradingSystem {
     const plan = store.list().find((p) => p.id === id);
     if (plan === undefined) return { error: `DCA plan ${id} not found`, code: 404 };
 
-    const result = await runner.contribute(plan);
+    const result = await this.dcaContribute(runner, plan);
 
     if ('invested' in result) {
       const now = this.now();
@@ -552,6 +577,43 @@ export class TradingSystem {
     }
 
     return result;
+  }
+
+  /**
+   * Prefetch price for `plan.symbol` via `getPrices` (if wired), populate the QuoteBook
+   * with the correct currency (USD for tickers, KRW for 6-digit codes), then delegate
+   * to `runner.contribute`.
+   *
+   * Mirrors the fresh-quote-preserving pattern from `rebalanceFactorPortfolio` (review M7):
+   * if a quote younger than FRESH_MS already exists, skip the fetch so the synthetic quote
+   * does not overwrite a real bid/ask from the market worker.
+   */
+  private async dcaContribute(
+    runner: DcaPlanRunner,
+    plan: DcaActivePlan,
+  ): Promise<{ invested: number; shares: number; price: number } | { skipped: string }> {
+    const getPrices = this.deps.getPrices;
+    if (getPrices !== undefined) {
+      const FRESH_MS = 10_000;
+      const existing = this.deps.book.getQuote(plan.symbol);
+      if (!existing || this.now() - existing.ts >= FRESH_MS) {
+        try {
+          const items = await getPrices([plan.symbol]);
+          for (const item of items) {
+            if (item.symbol !== plan.symbol) continue;
+            const last = Number(item.lastPrice);
+            if (!Number.isFinite(last) || last <= 0) continue;
+            const currency = inferCurrency(plan.symbol);
+            this.deps.book.set({ symbol: plan.symbol, currency, bid: last, ask: last, last, ts: this.now() });
+          }
+        } catch {
+          // Swallow — if a stale quote is in the book, runner uses it;
+          // if the book has no quote at all, runner returns { skipped: 'no price' }.
+        }
+      }
+    }
+
+    return runner.contribute(plan);
   }
 
   async backtest(input: {

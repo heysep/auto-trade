@@ -760,7 +760,7 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
 
       <div style="margin-bottom:12px">
         <button class="btn btn-primary" id="dca-run-btn" style="width:100%;justify-content:center;font-size:13px;padding:9px">비교 실행</button>
-        <div id="dca-loading" style="display:none;margin-top:8px;color:var(--muted);font-size:12px;text-align:center">15년치 백테스트 중&#8230; 최대 30초</div>
+        <div id="dca-loading" style="display:none;margin-top:8px;color:var(--muted);font-size:12px;text-align:center">최대 ~8년치 백테스트 중… 최대 30초</div>
         <div id="dca-error" style="display:none;margin-top:8px;color:var(--bear);font-size:12px"></div>
       </div>
 
@@ -2109,7 +2109,7 @@ function loadPerfData() {
   }).then(function(res) {
     if (statusEl) { statusEl.textContent = ''; statusEl.style.display = 'none'; }
     if (!res.ok) {
-      if (statusEl) { statusEl.textContent = esc(String(res.data.error || '오류')); statusEl.style.display = ''; }
+      if (statusEl) { statusEl.textContent = String(res.data.error || '오류'); statusEl.style.display = ''; }
       return;
     }
     var metrics = res.data.metrics || {};
@@ -2604,7 +2604,7 @@ if (dcaRunBtn) {
       if (btnEl) { btnEl.disabled = false; }
       if (loadEl) loadEl.style.display = 'none';
       if (!rd.ok) {
-        if (errEl) { errEl.textContent = esc(rd.d.error || '오류 발생'); errEl.style.display = ''; }
+        if (errEl) { errEl.textContent = rd.d.error || '오류 발생'; errEl.style.display = ''; }
         return;
       }
       var data = rd.d;

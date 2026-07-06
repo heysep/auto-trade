@@ -17,17 +17,19 @@ import { FactorModel } from '../factor/FactorModel.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
 import type { Order, Position, Quote, TradingMode } from '../domain/types.js';
 import type { TossCandle, TossStock, ChartCandle } from '../toss/types.js';
-import type { OrderManager } from '../order/OrderManager.js';
+import { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
 import type { RankingResult } from '../factor/FactorRankingService.js';
 import type { FactorBacktestReport } from '../factor/FactorBacktestService.js';
 import { FactorPortfolioManager } from '../factor/FactorPortfolioManager.js';
 import type { RebalancePlan } from '../factor/FactorPortfolioManager.js';
 import type { TossPriceItem } from '../toss/types.js';
-import { FACTOR_PORTFOLIO_STRATEGY_ID } from '../app/TradingSystem.js';
+import { FACTOR_PORTFOLIO_STRATEGY_ID, DCA_STRATEGY_ID, inferCurrency } from '../app/TradingSystem.js';
 import { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 import { PerformanceService } from '../performance/PerformanceService.js';
 import { InMemoryTradeTracker } from '../risk/TradeTracker.js';
+import { PaperBroker } from '../broker/PaperBroker.js';
+import { RiskManager } from '../risk/RiskManager.js';
 import type { AccountService, AccountHoldingsView } from '../app/AccountService.js';
 import { DcaService } from '../dca/DcaService.js';
 import type { DcaCompareResult } from '../dca/DcaService.js';
@@ -1368,5 +1370,170 @@ describe('DCA auto-invest API', () => {
     const res = await app.inject({ method: 'POST', url: '/api/dca/plans/1/run' });
     expect(res.statusCode).toBe(200);
     expect(res.json<{ skipped: string }>().skipped).toBe('halted');
+  });
+
+  // ── C1+M1 integration test ───────────────────────────────────────────────────
+  it('C1+M1: USD plan with no quote in book → prefetch fires → real id-2000 PAPER position with USD currency', async () => {
+    // Build a self-contained stack with real OrderManager + PaperBroker.
+    const testRepo   = new InMemoryRepository();
+    const testBook   = new QuoteBook();
+    const testReg    = new StrategyRegistry();
+    const testLogger = new InMemoryEventLogger();
+    const testHalt   = new HaltSwitch();
+    const testTracker = new InMemoryTradeTracker();
+
+    // Register the DCA strategy stub (mirrors index.ts).
+    const dcaStrat = {
+      id: DCA_STRATEGY_ID,
+      symbols: new Set<string>(),
+      currency: 'KRW' as const,
+      mode: 'PAPER' as const,
+      evaluate: () => null,
+    };
+    testReg.register(dcaStrat, 'DCA Auto-Invest', 'PAPER_TESTING');
+
+    const paperBroker = new PaperBroker(testRepo, testBook, {
+      tracker: testTracker,
+      isHalted: () => false,
+    });
+    const riskMgr = new RiskManager();
+    const orderMgr = new OrderManager({
+      brokerFor: () => paperBroker,
+      risk: riskMgr,
+      riskContext: () => ({
+        mode: 'PAPER' as const,
+        status: 'PAPER_TESTING' as const,
+        capital: 100_000_000,
+        limits: { maxPositionPct: 100, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 100 },
+        positions: [],
+        openOrdersForSymbol: 0,
+        dailyRealizedPnl: 0,
+        unrealizedPnl: 0,
+        consecutiveLosses: 0,
+      }),
+      logger: testLogger,
+      haltSwitch: testHalt,
+    });
+
+    const dcaStore = new DcaPlanStore();
+    const dcaRunner = new DcaPlanRunner({
+      priceOf: (sym) => testBook.getQuote(sym)?.last,
+      currentShares: (sym) => testRepo.getPosition(DCA_STRATEGY_ID, sym, 'PAPER')?.quantity ?? 0,
+      submitBuy: async (sym, amount, price) => {
+        // M1: correct currency per symbol
+        const currency = inferCurrency(sym);
+        const quote = testBook.getQuote(sym);
+        if (!quote) throw new Error(`no quote for ${sym}`);
+        const qty = amount / price;
+        const strategyForOrder = { ...dcaStrat, currency };
+        const outcome = await orderMgr.handleIntent(
+          strategyForOrder,
+          { side: 'BUY', quantity: qty, orderType: 'MARKET', reason: `DCA buy ${sym}` },
+          quote,
+        );
+        if (outcome.status !== 'placed') throw new Error(`order not placed: ${outcome.status}`);
+      },
+      isHalted: () => false,
+      now: () => Date.now(),
+    });
+
+    // Fake getPrices: SPY @ 500
+    const getPrices = async (syms: string[]): Promise<TossPriceItem[]> =>
+      syms.filter((s) => s === 'SPY').map((s) => ({
+        symbol: s,
+        lastPrice: '500',
+        timestamp: new Date().toISOString(),
+        fluctuationsRatio: '',
+      } as TossPriceItem));
+
+    const system = new TradingSystem({
+      repo: testRepo, book: testBook, registry: testReg, logger: testLogger, haltSwitch: testHalt,
+      getPrices,
+      dcaStore,
+      dcaRunner,
+      now: () => Date.now(),
+    });
+
+    const app = buildServer(system, {});
+
+    // Activate plan — testBook has NO quote for SPY at this point.
+    expect(testBook.getQuote('SPY')).toBeUndefined();
+
+    const activateRes = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'SPY', plan: { type: 'vanilla', cadence: 'weekly', amount: 500 } }),
+    });
+    expect(activateRes.statusCode).toBe(200);
+    const plan = activateRes.json<DcaActivePlan>();
+    expect(plan.symbol).toBe('SPY');
+
+    // Run — dcaContribute prefetches SPY price and places order.
+    const runRes = await app.inject({ method: 'POST', url: `/api/dca/plans/${plan.id}/run` });
+    expect(runRes.statusCode).toBe(200);
+    const result = runRes.json<{ invested: number; shares: number; price: number }>();
+    expect(result.invested).toBe(500);
+    expect(result.shares).toBeCloseTo(1);   // 500 / 500 = 1
+    expect(result.price).toBe(500);
+
+    // A real PAPER position must exist under strategyId 2000.
+    const position = testRepo.getPosition(DCA_STRATEGY_ID, 'SPY', 'PAPER');
+    expect(position).toBeDefined();
+    expect(position!.quantity).toBeCloseTo(1);
+
+    // M1: quote currency in book must be USD, not KRW.
+    const quote = testBook.getQuote('SPY');
+    expect(quote).toBeDefined();
+    expect(quote!.currency).toBe('USD');
+
+    // Plan stats updated.
+    const plans = system.listDcaPlans() as DcaActivePlan[];
+    const updated = plans.find((p) => p.id === plan.id);
+    expect(updated?.totalInvested).toBe(500);
+    expect(updated?.shares).toBeCloseTo(1);
+  });
+});
+
+// ── M3: dcaCompare window error → 400 ────────────────────────────────────────
+
+describe('POST /api/dca/compare — M3 window error vs fetch error', () => {
+  it('returns 400 when DcaService throws "no price data … in the requested window"', async () => {
+    const windowErrorSvc = {
+      compare: async () => {
+        throw new Error('no price data available for SPY in the requested window');
+      },
+    } as unknown as DcaService;
+
+    const { app } = harness({ dca: windowErrorSvc });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol: 'SPY',
+        plans: [{ type: 'vanilla', cadence: 'monthly', amount: 500 }],
+        from: 9999999999999,  // far-future from/to — empty window
+        to: 9999999999999,
+      }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/no price data/);
+  });
+
+  it('returns 502 when DcaService throws a generic fetch error', async () => {
+    const fetchErrorSvc = {
+      compare: async () => { throw new Error('upstream 500'); },
+    } as unknown as DcaService;
+
+    const { app } = harness({ dca: fetchErrorSvc });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol: 'SPY',
+        plans: [{ type: 'vanilla', cadence: 'monthly', amount: 500 }],
+      }),
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json<{ error: string }>().error).toMatch(/upstream fetch failed/);
   });
 });
