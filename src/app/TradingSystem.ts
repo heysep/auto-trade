@@ -17,6 +17,9 @@ import type { FactorBacktestService, FactorBacktestParams, FactorBacktestReport 
 import type { FactorPortfolioManager, RebalancePlan } from '../factor/FactorPortfolioManager.js';
 import type { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 import type { AccountService, AccountHoldingsView } from './AccountService.js';
+import type { DcaService, DcaCompareResult, DcaCompareInput } from '../dca/DcaService.js';
+import { validatePlan } from '../dca/dcaPlanValidation.js';
+import type { DcaPlan } from '../dca/DcaBacktest.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -72,6 +75,8 @@ export interface TradingSystemDeps {
   performance?: PerformanceService;
   /** Real Toss account holdings service (read-only). Omitted => accountHoldings() returns 503. */
   account?: AccountService;
+  /** DCA comparison service. Omitted => dcaCompare() returns 503. */
+  dca?: DcaService;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -336,6 +341,66 @@ export class TradingSystem {
     } catch (err) {
       console.error('[account] holdings fetch failed:', err instanceof Error ? err.message : String(err));
       return { error: 'account fetch failed', code: 502 };
+    }
+  }
+
+  /**
+   * Run a multi-plan DCA comparison with a lump-sum benchmark.
+   * Returns 503 when DcaService is not wired.
+   * Returns 400 on missing symbol, empty plans, or invalid plan fields.
+   * Returns 502 on upstream candle fetch failure.
+   */
+  async dcaCompare(input: {
+    symbol: unknown;
+    plans: unknown;
+    historyCount?: unknown;
+    from?: unknown;
+    to?: unknown;
+  }): Promise<DcaCompareResult | { error: string; code: number }> {
+    const svc = this.deps.dca;
+    if (svc === undefined) {
+      return { error: 'DCA service unavailable', code: 503 };
+    }
+
+    // Validate symbol
+    if (typeof input.symbol !== 'string' || input.symbol.trim() === '') {
+      return { error: 'symbol is required', code: 400 };
+    }
+
+    // Validate plans array
+    if (!Array.isArray(input.plans) || input.plans.length === 0) {
+      return { error: 'plans must be a non-empty array', code: 400 };
+    }
+
+    for (let i = 0; i < input.plans.length; i++) {
+      const v = validatePlan(input.plans[i]);
+      if (!v.ok) {
+        return { error: `plans[${i}]: ${v.error}`, code: 400 };
+      }
+    }
+
+    // Validate optional historyCount
+    if (input.historyCount !== undefined) {
+      const n = Number(input.historyCount);
+      if (!Number.isInteger(n) || n <= 0) {
+        return { error: 'historyCount must be a positive integer', code: 400 };
+      }
+    }
+
+    // Build typed compare input — explicit conditional assignment (exactOptionalPropertyTypes)
+    const compareInput: DcaCompareInput = {
+      symbol: input.symbol.trim(),
+      plans:  input.plans as DcaPlan[],
+    };
+    if (input.historyCount !== undefined) compareInput.historyCount = Number(input.historyCount);
+    if (typeof input.from === 'number' && Number.isFinite(input.from)) compareInput.from = input.from;
+    if (typeof input.to   === 'number' && Number.isFinite(input.to))   compareInput.to   = input.to;
+
+    try {
+      return await svc.compare(compareInput);
+    } catch (err) {
+      console.error('[dca] compare failed:', err instanceof Error ? err.message : String(err));
+      return { error: 'upstream fetch failed', code: 502 };
     }
   }
 

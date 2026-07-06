@@ -291,6 +291,34 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return result;
   });
 
+  // --- DCA compare ---
+  app.post('/api/dca/compare', async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      symbol?: unknown;
+      plans?: unknown;
+      historyCount?: unknown;
+      from?: unknown;
+      to?: unknown;
+    };
+    const result = await system.dcaCompare({
+      symbol: body.symbol,
+      plans:  body.plans,
+      ...(body.historyCount !== undefined ? { historyCount: body.historyCount } : {}),
+      ...(body.from !== undefined ? { from: body.from } : {}),
+      ...(body.to   !== undefined ? { to:   body.to   } : {}),
+    });
+    if ('error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    return result;
+  });
+
+  // --- DCA symbol search (forwards to KRX catalog; US symbols like SPY return []) ---
+  app.get('/api/dca/symbols', async (req) => {
+    const q = req.query as { q?: string };
+    return system.searchSymbols(q.q ?? '');
+  });
+
   return app;
 }
 

@@ -29,6 +29,8 @@ import { RebalanceScheduler } from '../factor/RebalanceScheduler.js';
 import { PerformanceService } from '../performance/PerformanceService.js';
 import { InMemoryTradeTracker } from '../risk/TradeTracker.js';
 import type { AccountService, AccountHoldingsView } from '../app/AccountService.js';
+import { DcaService } from '../dca/DcaService.js';
+import type { DcaCompareResult } from '../dca/DcaService.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -52,6 +54,8 @@ function harness(opts: {
   withPerformanceService?: boolean;
   /** Real account holdings service mock. Omitted => accountHoldings() returns 503. */
   account?: AccountService;
+  /** DCA service mock. Omitted => dcaCompare() returns 503. */
+  dca?: DcaService;
   /** Mode used to query held positions for the factor portfolio. Omitted => 'PAPER'. */
   factorPortfolioMode?: TradingMode;
   /** Injectable sleep for retry backoff. Defaults to real setTimeout; use `async () => {}` in tests. */
@@ -102,6 +106,7 @@ function harness(opts: {
     ...(opts.rebalanceScheduler !== undefined ? { rebalanceScheduler: opts.rebalanceScheduler } : {}),
     ...(perfSvc !== undefined ? { performance: perfSvc } : {}),
     ...(opts.account !== undefined ? { account: opts.account } : {}),
+    ...(opts.dca !== undefined ? { dca: opts.dca } : {}),
     ...(opts.factorPortfolioMode !== undefined ? { factorPortfolioMode: opts.factorPortfolioMode } : {}),
     ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
   });
@@ -1073,5 +1078,103 @@ describe('GET /api/performance', () => {
     const res = await app.inject({ method: 'GET', url: '/api/account/holdings' });
     expect(res.statusCode).toBe(503);
     expect(res.json<{ error: string }>().error).toMatch(/not wired/);
+  });
+});
+
+// ── DCA compare route tests ─────────────────────────────────────────────────────
+
+/** Build a fake DcaService backed by synthetic rising-price candles. */
+function fakeDcaService(): DcaService {
+  const candles: TossCandle[] = Array.from({ length: 48 }, (_, i) => ({
+    timestamp: new Date(Date.UTC(2021 + Math.floor(i / 12), i % 12, 1)).toISOString(),
+    openPrice: String(100 + i),
+    highPrice: String(100 + i),
+    lowPrice: String(100 + i),
+    closePrice: String(100 + i),
+  })).reverse(); // newest-first as Toss returns
+  return new DcaService({ getCandles: async () => candles, now: () => 0, ttlMs: 60_000 });
+}
+
+describe('POST /api/dca/compare', () => {
+  it('returns 200 with results when DcaService is wired', async () => {
+    const { app } = harness({ dca: fakeDcaService() });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol: 'SPY',
+        plans: [{ type: 'vanilla', cadence: 'monthly', amount: 500 }],
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<DcaCompareResult>();
+    expect(body.symbol).toBe('SPY');
+    expect(body.results).toHaveLength(1);
+    expect(body.benchmark).toBeDefined();
+    expect(typeof body.windowNote).toBe('string');
+  });
+
+  it('returns 400 when symbol is missing', async () => {
+    const { app } = harness({ dca: fakeDcaService() });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plans: [{ type: 'vanilla', cadence: 'monthly', amount: 500 }] }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/symbol/);
+  });
+
+  it('returns 400 when plan type is invalid', async () => {
+    const { app } = harness({ dca: fakeDcaService() });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol: 'SPY',
+        plans: [{ type: 'notAType', cadence: 'monthly', amount: 500 }],
+      }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/type/);
+  });
+
+  it('returns 400 when plans array is empty', async () => {
+    const { app } = harness({ dca: fakeDcaService() });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'SPY', plans: [] }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/plans/);
+  });
+
+  it('returns 503 when DcaService is not wired', async () => {
+    const { app } = harness({}); // no dca dep
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/dca/compare',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol: 'SPY',
+        plans: [{ type: 'vanilla', cadence: 'monthly', amount: 500 }],
+      }),
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json<{ error: string }>().error).toMatch(/unavailable/i);
+  });
+});
+
+describe('GET /api/dca/symbols', () => {
+  it('returns empty array with no catalog (US symbols not in KRX catalog)', async () => {
+    const { app } = harness({});
+    const res = await app.inject({ method: 'GET', url: '/api/dca/symbols?q=SPY' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
   });
 });
