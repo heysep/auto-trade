@@ -280,6 +280,38 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.15)}
+/* dca lab */
+.dca-presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.dca-preset-btn{
+  background:rgba(59,130,246,.1);color:#60a5fa;border:1px solid rgba(59,130,246,.25);
+  border-radius:var(--radius);padding:3px 10px;font:inherit;font-size:12px;cursor:pointer;
+  transition:background .12s;
+}
+.dca-preset-btn:hover{background:rgba(59,130,246,.2)}
+.dca-preset-btn.active{background:rgba(59,130,246,.25);border-color:#60a5fa}
+.plan-row{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.04);
+}
+.plan-row:last-child{border-bottom:0}
+.plan-row select,.plan-row input{font:inherit;font-size:12px}
+.plan-row input[type="number"]{width:80px}
+.plan-extra{display:flex;align-items:center;gap:6px}
+.plan-rm-btn{
+  background:none;border:1px solid rgba(239,68,68,.3);color:#f87171;
+  border-radius:var(--radius);padding:2px 7px;cursor:pointer;font:inherit;font-size:12px;
+  flex-shrink:0;
+}
+.plan-rm-btn:hover{background:rgba(239,68,68,.1)}
+.dca-caveat{
+  padding:10px 14px;margin:12px 0;
+  background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);
+  border-radius:var(--radius);color:#fbbf24;font-size:11px;line-height:1.7;
+}
+.dca-caveat strong{color:#fcd34d}
+.dca-bench-row td{background:rgba(59,130,246,.07);border-top:1px solid rgba(59,130,246,.2)}
+.dca-best-irr td:nth-child(5){color:#4ade80;font-weight:700}
+.dca-chart-wrap{position:relative;height:240px;border-radius:var(--radius);overflow:hidden;background:#0a0f1e;margin-top:12px}
 </style>
 </head>
 <body>
@@ -291,7 +323,7 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
     </div>
     <div>
       <div class="sb-logo-name">AutoTrade</div>
-      <div class="sb-logo-sub">Toss Securities</div>
+      <div class="sb-logo-sub">DCA Research Lab</div>
     </div>
   </div>
   <div class="sb-pills">
@@ -300,55 +332,45 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
   </div>
   <nav id="nav">
     <div class="nav-group-hdr">OVERVIEW</div>
-    <button class="nav-item active" data-view="dashboard">
+    <button class="nav-item" data-view="dashboard">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
       Dashboard
     </button>
-    <div class="nav-group-hdr" style="margin-top:6px">RESEARCH</div>
-    <button class="nav-item" data-view="lab">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v4l-2 4v8h12V11L16 7V3"/><path d="M8 3h8"/><path d="M6 15h12"/></svg>
-      Strategy Lab
+    <div class="nav-group-hdr" style="margin-top:6px">LAB</div>
+    <button class="nav-item active" data-view="dca">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      DCA 랩
     </button>
-    <button class="nav-item" data-view="composed">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-      Composed
-    </button>
-    <button class="nav-item" data-view="ranking">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-      팩터 랭킹
-    </button>
-    <button class="nav-item" data-view="fbt">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      팩터 백테스트
-    </button>
-    <div class="nav-group-hdr" style="margin-top:6px">OPERATION</div>
-    <button class="nav-item" data-view="trading">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
-      Trading
-    </button>
+    <div class="nav-group-hdr" style="margin-top:6px">ACCOUNT</div>
     <button class="nav-item" data-view="portfolio">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/></svg>
       Portfolio
     </button>
-    <button class="nav-item" data-view="orders">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
-      Orders
-    </button>
-    <div class="nav-group-hdr" style="margin-top:6px">ANALYTICS</div>
     <button class="nav-item" data-view="performance">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Performance
     </button>
+    <div class="nav-group-hdr" style="margin-top:6px"></div>
     <button class="nav-item" data-view="risk" id="nav-risk-btn">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       Risk / Halt
       <span class="nav-halt-dot" id="nav-halt-dot" style="display:none"></span>
     </button>
-    <div class="nav-group-hdr" style="margin-top:6px"></div>
     <button class="nav-item" data-view="settings">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       Settings
     </button>
+    <!-- HIDDEN VIEWS (code preserved, nav hidden — pivot to DCA Lab) -->
+    <!--
+    <div class="nav-group-hdr" style="margin-top:6px">RESEARCH</div>
+    <button class="nav-item" data-view="lab">Strategy Lab</button>
+    <button class="nav-item" data-view="composed">Composed</button>
+    <button class="nav-item" data-view="ranking">팩터 랭킹</button>
+    <button class="nav-item" data-view="fbt">팩터 백테스트</button>
+    <div class="nav-group-hdr" style="margin-top:6px">OPERATION</div>
+    <button class="nav-item" data-view="trading">Trading</button>
+    <button class="nav-item" data-view="orders">Orders</button>
+    -->
   </nav>
   <div class="sb-status">
     <div class="sb-status-row">
@@ -390,7 +412,7 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
   <main id="content">
 
     <!-- ===== DASHBOARD ===== -->
-    <section id="view-dashboard" class="view-section active">
+    <section id="view-dashboard" class="view-section">
       <div class="badge-row">
         <span class="badge badge-primary" id="dash-badge-paper">PAPER RUNNING</span>
         <span class="badge badge-muted" id="dash-badge-live">LIVE DISABLED</span>
@@ -703,6 +725,66 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
       </div>
     </section>
 
+    <!-- ===== DCA LAB ===== -->
+    <section id="view-dca" class="view-section active">
+      <div class="card" style="margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">종목 (US 심볼 직접 입력)</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <input type="text" id="dca-symbol" value="SPY" placeholder="SPY" style="width:100px;text-transform:uppercase" autocomplete="off" spellcheck="false">
+          <div class="dca-presets">
+            <button class="dca-preset-btn active" data-sym="SPY">SPY</button>
+            <button class="dca-preset-btn" data-sym="QQQ">QQQ</button>
+            <button class="dca-preset-btn" data-sym="VTI">VTI</button>
+            <button class="dca-preset-btn" data-sym="VOO">VOO</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;padding:0;overflow:hidden">
+        <div style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;flex:1">플랜 빌더</span>
+          <button class="btn btn-ghost" id="dca-add-plan" style="padding:3px 10px;font-size:11px">+ 플랜 추가</button>
+        </div>
+        <div id="dca-plan-list"></div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <button class="btn btn-primary" id="dca-run-btn" style="width:100%;justify-content:center;font-size:13px;padding:9px">비교 실행</button>
+        <div id="dca-loading" style="display:none;margin-top:8px;color:var(--muted);font-size:12px;text-align:center">15년치 백테스트 중&#8230; 최대 30초</div>
+        <div id="dca-error" style="display:none;margin-top:8px;color:var(--bear);font-size:12px"></div>
+      </div>
+
+      <div id="dca-results" style="display:none">
+        <div id="dca-caveat-banner" class="dca-caveat"></div>
+        <div class="dca-caveat" style="margin-top:0">
+          <strong>주의</strong> 과거 성과 &#8800; 미래. DCA&#xB294; 알파&#xAC00; 아&#xB2C8;&#xB77C; 규율&#xB7C9; &#xD3C9;&#xB2E8; &#xAD00;&#xB9AC; 도구.
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">
+          <div class="tbl-wrap">
+            <table id="dca-results-table">
+              <thead>
+                <tr>
+                  <th>플랜</th>
+                  <th class="num">투자금</th>
+                  <th class="num">최종가치</th>
+                  <th class="num">평단($)</th>
+                  <th class="num">IRR(%)</th>
+                  <th class="num">MDD(%)</th>
+                  <th class="num">배수</th>
+                </tr>
+              </thead>
+              <tbody id="dca-results-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card" style="padding:12px 16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">누적 투자 곡선 (기여시점 평가)</div>
+          <div class="dca-chart-wrap"><div id="dca-chart" style="width:100%;height:100%"></div></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:6px">* 각 기여일의 가격&#xC73C;&#xB85C; 누적 평가 &mdash; MTM 근사치, 참고용</div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== PERFORMANCE ===== -->
     <section id="view-performance" class="view-section">
       <div class="card" style="padding:0;overflow:hidden">
@@ -816,12 +898,13 @@ function symText(sym) {
 
 /* ---- View router ---- */
 var VIEW_TITLES = {
-  dashboard: 'Dashboard', lab: 'Strategy Lab', composed: 'Composed',
+  dashboard: 'Dashboard', dca: 'DCA 랩',
+  lab: 'Strategy Lab', composed: 'Composed',
   ranking: '팩터 랭킹', fbt: '팩터 백테스트', trading: 'Trading',
   portfolio: 'Portfolio', orders: 'Orders', performance: 'Performance',
   risk: 'Risk / Halt', settings: 'Settings'
 };
-var currentView = 'dashboard';
+var currentView = 'dca';
 function navigate(view) {
   if (!VIEW_TITLES[view]) return;
   currentView = view;
@@ -839,6 +922,10 @@ function navigate(view) {
   if (view === 'dashboard') loadDashPerf();
   if (view === 'lab' && labChart) labChart.applyOptions({ width: document.getElementById('lab-chart').offsetWidth });
   if (view === 'trading' && trdChart) trdChart.applyOptions({ width: document.getElementById('trd-chart').offsetWidth });
+  if (view === 'dca' && dcaChart) {
+    var dcaChartEl = document.getElementById('dca-chart');
+    if (dcaChartEl) dcaChart.applyOptions({ width: dcaChartEl.offsetWidth, height: dcaChartEl.offsetHeight });
+  }
 }
 document.querySelectorAll('.nav-item').forEach(function(btn) {
   btn.addEventListener('click', function() { navigate(this.dataset.view); });
@@ -2054,6 +2141,322 @@ if (perfStratEl) {
 var perfModeEl = document.getElementById('perf-mode');
 if (perfModeEl) {
   perfModeEl.addEventListener('change', function() { loadPerfData(); });
+}
+
+/* ---- DCA Research Lab ---- */
+/* Plan builder */
+var dcaPlanSeq = 0;
+var dcaDefaultPlans = [
+  { type: 'vanilla', cadence: 'monthly', amount: 500, dipExtra: '', dipPct: '', trendWindow: '' },
+  { type: 'trendFiltered', cadence: 'monthly', amount: 500, dipExtra: '', dipPct: '', trendWindow: 200 }
+];
+
+function dcaTypeLabel(t) {
+  var map = { vanilla: '정액', dipBuying: '딥바잉', trendFiltered: '추세필터', valueAveraging: '밸류에버리징', lumpSum: '일시불' };
+  return map[t] || t;
+}
+
+function renderPlanRow(pl) {
+  var id = pl._id;
+  var typeOpts = ['vanilla','dipBuying','trendFiltered','valueAveraging'].map(function(t) {
+    return '<option value="' + t + '"' + (pl.type === t ? ' selected' : '') + '>' + dcaTypeLabel(t) + '</option>';
+  }).join('');
+  var cadOpts = [['monthly','매월'],['biweekly','격주'],['weekly','매주']].map(function(c) {
+    return '<option value="' + c[0] + '"' + (pl.cadence === c[0] ? ' selected' : '') + '>' + c[1] + '</option>';
+  }).join('');
+  var extraDip = pl.type === 'dipBuying' ? (
+    '<span class="plan-extra">'
+    + '<label style="color:var(--muted);font-size:11px;white-space:nowrap">추가$</label>'
+    + '<input type="number" class="dca-dip-extra" data-id="' + id + '" value="' + (pl.dipExtra || 500) + '" min="0" step="50">'
+    + '<label style="color:var(--muted);font-size:11px;white-space:nowrap">DD%</label>'
+    + '<input type="number" class="dca-dip-pct" data-id="' + id + '" value="' + (pl.dipPct || 10) + '" min="1" max="99" step="1">'
+    + '</span>'
+  ) : '';
+  var extraTrend = pl.type === 'trendFiltered' ? (
+    '<span class="plan-extra">'
+    + '<label style="color:var(--muted);font-size:11px;white-space:nowrap">MA일</label>'
+    + '<input type="number" class="dca-trend-win" data-id="' + id + '" value="' + (pl.trendWindow || 200) + '" min="10" max="500" step="10">'
+    + '</span>'
+  ) : '';
+  return '<div class="plan-row" data-plan-id="' + id + '">'
+    + '<select class="dca-plan-type" data-id="' + id + '">' + typeOpts + '</select>'
+    + '<select class="dca-plan-cadence" data-id="' + id + '">' + cadOpts + '</select>'
+    + '<label style="color:var(--muted);font-size:11px;white-space:nowrap">$</label>'
+    + '<input type="number" class="dca-plan-amount" data-id="' + id + '" value="' + (pl.amount || 500) + '" min="1" step="50">'
+    + extraDip + extraTrend
+    + '<button class="plan-rm-btn" data-id="' + id + '">&times;</button>'
+    + '</div>';
+}
+
+var dcaPlans = dcaDefaultPlans.map(function(p) {
+  var pl = { _id: ++dcaPlanSeq, type: p.type, cadence: p.cadence, amount: p.amount,
+    dipExtra: p.dipExtra, dipPct: p.dipPct, trendWindow: p.trendWindow };
+  return pl;
+});
+
+function refreshPlanList() {
+  var listEl = document.getElementById('dca-plan-list');
+  if (!listEl) return;
+  listEl.innerHTML = dcaPlans.map(renderPlanRow).join('');
+  /* re-wire type change → re-render */
+  listEl.querySelectorAll('.dca-plan-type').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      var pid = Number(this.dataset.id);
+      var plan = null;
+      for (var i = 0; i < dcaPlans.length; i++) { if (dcaPlans[i]._id === pid) { plan = dcaPlans[i]; break; } }
+      if (!plan) return;
+      plan.type = this.value;
+      refreshPlanList();
+    });
+  });
+  listEl.querySelectorAll('.plan-rm-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var pid = Number(this.dataset.id);
+      dcaPlans = dcaPlans.filter(function(p) { return p._id !== pid; });
+      refreshPlanList();
+    });
+  });
+}
+refreshPlanList();
+
+var dcaAddBtn = document.getElementById('dca-add-plan');
+if (dcaAddBtn) {
+  dcaAddBtn.addEventListener('click', function() {
+    dcaPlans.push({ _id: ++dcaPlanSeq, type: 'vanilla', cadence: 'monthly', amount: 500,
+      dipExtra: '', dipPct: '', trendWindow: '' });
+    refreshPlanList();
+  });
+}
+
+/* Symbol preset buttons */
+document.querySelectorAll('.dca-preset-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var sym = this.dataset.sym;
+    var inp = document.getElementById('dca-symbol');
+    if (inp) inp.value = sym;
+    document.querySelectorAll('.dca-preset-btn').forEach(function(b) { b.classList.remove('active'); });
+    this.classList.add('active');
+  });
+});
+var dcaSymInp = document.getElementById('dca-symbol');
+if (dcaSymInp) {
+  dcaSymInp.addEventListener('input', function() {
+    document.querySelectorAll('.dca-preset-btn').forEach(function(b) { b.classList.remove('active'); });
+  });
+}
+
+/* Read current plan values from DOM */
+function readPlans() {
+  var out = [];
+  var listEl = document.getElementById('dca-plan-list');
+  if (!listEl) return out;
+  listEl.querySelectorAll('[data-plan-id]').forEach(function(row) {
+    var pid = Number(row.dataset.planId);
+    var planRef = null;
+    for (var i = 0; i < dcaPlans.length; i++) { if (dcaPlans[i]._id === pid) { planRef = dcaPlans[i]; break; } }
+    var typeEl = row.querySelector('.dca-plan-type');
+    var cadEl = row.querySelector('.dca-plan-cadence');
+    var amtEl = row.querySelector('.dca-plan-amount');
+    var type = typeEl ? typeEl.value : (planRef ? planRef.type : 'vanilla');
+    var cadence = cadEl ? cadEl.value : 'monthly';
+    var amount = amtEl ? Math.max(1, Number(amtEl.value) || 500) : 500;
+    var plan = { type: type, cadence: cadence, amount: amount };
+    if (type === 'dipBuying') {
+      var deEl = row.querySelector('.dca-dip-extra');
+      var dpEl = row.querySelector('.dca-dip-pct');
+      plan.dipExtra = deEl ? (Number(deEl.value) || 500) : 500;
+      plan.dipDrawdownPct = dpEl ? (Number(dpEl.value) || 10) : 10;
+    }
+    if (type === 'trendFiltered') {
+      var twEl = row.querySelector('.dca-trend-win');
+      plan.trendWindow = twEl ? (Number(twEl.value) || 200) : 200;
+    }
+    out.push(plan);
+  });
+  return out;
+}
+
+/* Chart for DCA equity curves */
+var dcaChart = null;
+var dcaSeriesList = [];
+
+function ensureDcaChart(el) {
+  if (dcaChart) return true;
+  try {
+    dcaChart = LightweightCharts.createChart(el, {
+      layout: { background: { color: '#0a0f1e' }, textColor: '#94a3b8' },
+      grid: { vertLines: { color: '#16213a' }, horzLines: { color: '#16213a' } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true },
+      width: el.offsetWidth || 600, height: el.offsetHeight || 240,
+      handleScroll: false, handleScale: false,
+    });
+    new ResizeObserver(function() {
+      dcaChart.applyOptions({ width: el.offsetWidth, height: el.offsetHeight });
+    }).observe(el);
+    return true;
+  } catch (e) {
+    console.error('[dca-chart] init failed:', e);
+    dcaChart = null;
+    return false;
+  }
+}
+
+var DCA_COLORS = ['#3b82f6','#22c55e','#f59e0b','#a855f7','#06b6d4','#f87171'];
+
+function renderDcaChart(results, benchLumpSum) {
+  var el = document.getElementById('dca-chart');
+  if (!el) return;
+  try {
+    if (!ensureDcaChart(el)) return;
+    /* remove old series */
+    dcaSeriesList.forEach(function(s) { try { dcaChart.removeSeries(s); } catch (e2) {} });
+    dcaSeriesList = [];
+    /* helper: build cumulative-value curve from contributions (cumShares × price at each contribution) */
+    function buildCurve(result) {
+      if (!result || !Array.isArray(result.contributions)) return [];
+      var cumShares = 0;
+      var seen = {};
+      return result.contributions.map(function(c) {
+        cumShares += Number(c.shares) || 0;
+        var t = Math.floor(new Date(c.date).getTime() / 1000);
+        var v = cumShares * (Number(c.price) || 0);
+        return { time: t, value: v };
+      }).filter(function(p) {
+        if (seen[p.time]) return false;
+        seen[p.time] = true;
+        return p.time > 0;
+      }).sort(function(a, b) { return a.time - b.time; });
+    }
+    results.forEach(function(item, idx) {
+      var color = DCA_COLORS[idx % DCA_COLORS.length];
+      var series = dcaChart.addLineSeries({ color: color, lineWidth: 2, title: item.label || ('플랜' + (idx + 1)) });
+      series.setData(buildCurve(item.result));
+      dcaSeriesList.push(series);
+    });
+    /* benchmark */
+    if (benchLumpSum && benchLumpSum.contributions && benchLumpSum.contributions.length) {
+      var bColor = 'rgba(148,163,184,0.6)';
+      var bSeries = dcaChart.addLineSeries({ color: bColor, lineWidth: 1, lineStyle: 1, title: '일시불' });
+      bSeries.setData(buildCurve(benchLumpSum));
+      dcaSeriesList.push(bSeries);
+    }
+    dcaChart.applyOptions({ width: el.offsetWidth, height: el.offsetHeight });
+    dcaChart.timeScale().fitContent();
+  } catch (chartErr) {
+    console.error('[dca-chart] render failed:', chartErr);
+  }
+}
+
+/* Render results table */
+function renderDcaTable(data) {
+  var tbody = document.getElementById('dca-results-tbody');
+  if (!tbody) return;
+  var results = Array.isArray(data.results) ? data.results : [];
+  var bench = data.benchmark || {};
+  var lump = bench.lumpSum || {};
+  /* find best IRR */
+  var bestIrr = -Infinity;
+  results.forEach(function(item) {
+    var r = item.result || {};
+    var irr = Number(r.moneyWeightedReturn) || 0;
+    if (irr > bestIrr) bestIrr = irr;
+  });
+  function fmtM(v) { return v != null ? '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'; }
+  function fmtPct(v) { return v != null ? (Number(v) * 100).toFixed(2) + '%' : '—'; }
+  function fmtX(invested, final) {
+    var i = Number(invested); var f = Number(final);
+    return i > 0 ? (f / i).toFixed(2) + 'x' : '—';
+  }
+  var rows = results.map(function(item, idx) {
+    var r = item.result || {};
+    var irr = Number(r.moneyWeightedReturn) || 0;
+    var isBest = Math.abs(irr - bestIrr) < 1e-9 && bestIrr > -Infinity;
+    var cls = isBest ? 'dca-best-irr' : '';
+    var irrCls = irr > 0 ? 'num pos' : irr < 0 ? 'num neg' : 'num';
+    var finalVal = Number(r.finalValue) || 0;
+    var invested = Number(r.totalInvested) || 0;
+    var color = DCA_COLORS[idx % DCA_COLORS.length];
+    return '<tr class="' + cls + '">'
+      + '<td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';margin-right:6px"></span>' + esc(item.label || ('플랜' + (idx + 1))) + '</td>'
+      + '<td class="num">' + esc(fmtM(r.totalInvested)) + '</td>'
+      + '<td class="num ' + (finalVal > invested ? 'pos' : 'neg') + '">' + esc(fmtM(r.finalValue)) + '</td>'
+      + '<td class="num">' + esc(r.avgCost != null ? '$' + Number(r.avgCost).toFixed(2) : '—') + '</td>'
+      + '<td class="' + irrCls + '">' + esc(fmtPct(r.moneyWeightedReturn)) + '</td>'
+      + '<td class="num neg">' + esc(fmtPct(r.maxDrawdown)) + '</td>'
+      + '<td class="num">' + esc(fmtX(r.totalInvested, r.finalValue)) + '</td>'
+      + '</tr>';
+  }).join('');
+  /* lump-sum benchmark row */
+  var lumpIrr = Number(lump.moneyWeightedReturn) || 0;
+  var lumpFinal = Number(lump.finalValue) || 0;
+  var lumpInvested = Number(lump.totalInvested) || 0;
+  var benchRow = '<tr class="dca-bench-row">'
+    + '<td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(148,163,184,0.6);margin-right:6px"></span>일시불 (벤치)</td>'
+    + '<td class="num">' + esc(fmtM(lump.totalInvested)) + '</td>'
+    + '<td class="num ' + (lumpFinal > lumpInvested ? 'pos' : 'neg') + '">' + esc(fmtM(lump.finalValue)) + '</td>'
+    + '<td class="num">' + esc(lump.avgCost != null ? '$' + Number(lump.avgCost).toFixed(2) : '—') + '</td>'
+    + '<td class="num ' + (lumpIrr > 0 ? 'pos' : 'neg') + '">' + esc(fmtPct(lump.moneyWeightedReturn)) + '</td>'
+    + '<td class="num neg">' + esc(fmtPct(lump.maxDrawdown)) + '</td>'
+    + '<td class="num">' + esc(fmtX(lump.totalInvested, lump.finalValue)) + '</td>'
+    + '</tr>';
+  tbody.innerHTML = rows + benchRow;
+}
+
+/* Run DCA compare */
+var dcaRunBtn = document.getElementById('dca-run-btn');
+if (dcaRunBtn) {
+  dcaRunBtn.addEventListener('click', function() {
+    var symEl = document.getElementById('dca-symbol');
+    var sym = symEl ? symEl.value.trim().toUpperCase() : 'SPY';
+    if (!sym) { alert('종목 심볼을 입력하세요 (예: SPY)'); return; }
+    var plans = readPlans();
+    if (!plans.length) { alert('플랜을 하나 이상 추가하세요'); return; }
+
+    var btnEl = document.getElementById('dca-run-btn');
+    var loadEl = document.getElementById('dca-loading');
+    var errEl = document.getElementById('dca-error');
+    var resEl = document.getElementById('dca-results');
+    if (btnEl) { btnEl.disabled = true; }
+    if (loadEl) loadEl.style.display = '';
+    if (errEl) errEl.style.display = 'none';
+    if (resEl) resEl.style.display = 'none';
+
+    fetch('/api/dca/compare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-token': token() },
+      body: JSON.stringify({ symbol: sym, plans: plans }),
+    }).then(function(r) {
+      return r.json().then(function(d) { return { ok: r.ok, d: d }; });
+    }).then(function(rd) {
+      if (btnEl) { btnEl.disabled = false; }
+      if (loadEl) loadEl.style.display = 'none';
+      if (!rd.ok) {
+        if (errEl) { errEl.textContent = esc(rd.d.error || '오류 발생'); errEl.style.display = ''; }
+        return;
+      }
+      var data = rd.d;
+      /* caveat banner */
+      var cavEl = document.getElementById('dca-caveat-banner');
+      if (cavEl) {
+        var windowNote = data.windowNote ? esc(data.windowNote) : '';
+        var yearNote = data.years ? esc(String(data.years)) + '년 구간' : '';
+        var cavParts = [];
+        if (windowNote) cavParts.push('<strong>&#x26A0; ' + windowNote + '</strong>');
+        if (yearNote) cavParts.push(yearNote);
+        cavEl.innerHTML = cavParts.join(' &mdash; ') || '백테스트 완료';
+        cavEl.style.display = cavParts.length ? '' : 'none';
+      }
+      renderDcaTable(data);
+      renderDcaChart(data.results || [], (data.benchmark || {}).lumpSum);
+      if (resEl) resEl.style.display = '';
+    }).catch(function(e) {
+      console.error('[dca] fetch error:', e);
+      if (btnEl) { btnEl.disabled = false; }
+      if (loadEl) loadEl.style.display = 'none';
+      if (errEl) { errEl.textContent = '네트워크 오류'; errEl.style.display = ''; }
+    });
+  });
 }
 
 /* ---- Settings: API_TOKEN (localStorage) ---- */

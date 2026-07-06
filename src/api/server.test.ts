@@ -129,6 +129,11 @@ describe('HTTP API', () => {
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.body).toContain('AutoTrade');
     expect(res.body).toContain('Dashboard');
+    // DCA Lab nav pivot — new primary view
+    expect(res.body).toContain('DCA 랩');
+    expect(res.body).toContain('DCA Research Lab');
+    expect(res.body).toContain('비교 실행');
+    // Legacy view sections preserved (code kept, nav hidden)
     expect(res.body).toContain('Strategy Lab');
     expect(res.body).toContain('Portfolio');
     expect(res.body).toContain('Performance');
@@ -145,7 +150,7 @@ describe('HTTP API', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.headers['content-type']).toMatch(/charset=utf-8/);
-    expect(res.body).toContain('lightweight-charts');
+    expect(res.body).toContain('lightweight-charts@4.2.3');
     expect(res.body).toContain('백테스트');
     expect(res.body).toContain('페이퍼 배포');
     expect(res.body).toContain('esc(');
@@ -154,6 +159,10 @@ describe('HTTP API', () => {
     expect(res.body).toContain('리밸런싱');
     expect(res.body).toContain('자동 리밸런싱');
     expect(res.body).toContain('성과');
+    // DCA Lab specifics
+    expect(res.body).toContain('windowNote');      // JS handler for caveat banner
+    expect(res.body).toContain('비교 실행');        // run button
+    expect(res.body).toContain('DCA Research Lab'); // logo subtitle
   });
 
   it('404s unknown strategy/quote; 400s a bad mode', async () => {
