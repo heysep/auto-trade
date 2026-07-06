@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DcaBacktest } from './DcaBacktest.js';
-import type { PricePoint } from './DcaBacktest.js';
+import type { DcaPlan, PricePoint } from './DcaBacktest.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -370,5 +370,69 @@ describe('DcaBacktest – timeWeightedReturn', () => {
     const bt = new DcaBacktest({ type: 'vanilla', cadence: 'biweekly', amount: 100 });
     const r = bt.run(prices);
     expect(r.timeWeightedReturn).toBeCloseTo(1.0, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. trendFiltered IRR accounting (I1) — sidelined cash counted in totalInvested
+// ---------------------------------------------------------------------------
+describe('DcaBacktest — trendFiltered IRR accounting (I1)', () => {
+  it('totalInvested equals nPeriods * amount (sidelined periods counted)', () => {
+    // 6 monthly price points: months 1-3 warmup (sidelined), months 4-6 above SMA (invest)
+    // trendWindow=3 → months 1-3 have closeSoFar.length < 3 → sidelined
+    // month 4: slice(-3)=[100,100,100] SMA=100, close=200 > 100 → INVEST
+    // month 5: slice(-3)=[100,100,200] SMA=133.3, close=200 > 133.3 → INVEST
+    // month 6: slice(-3)=[100,200,200] SMA=166.7, close=200 > 166.7 → INVEST
+    // After fix: totalInvested = 6 * 100 = 600 (not 3 * 100 = 300)
+    const plan: DcaPlan = {
+      type: 'trendFiltered', cadence: 'monthly', amount: 100, trendWindow: 3, costPct: 0,
+    };
+    const prices: PricePoint[] = [
+      { date: Date.UTC(2023, 0, 1), close: 100 },
+      { date: Date.UTC(2023, 1, 1), close: 100 },
+      { date: Date.UTC(2023, 2, 1), close: 100 },
+      { date: Date.UTC(2023, 3, 1), close: 200 },
+      { date: Date.UTC(2023, 4, 1), close: 200 },
+      { date: Date.UTC(2023, 5, 1), close: 200 },
+    ];
+    const result = new DcaBacktest(plan).run(prices);
+    // All 6 periods counted: 6 * 100 = 600
+    expect(result.totalInvested).toBe(600);
+    // Only 3 actual buys (display list unchanged)
+    expect(result.contributions).toHaveLength(3);
+  });
+
+  it('trendFiltered multiple is finite and < 1.5 (not inflated by hidden sidelined cash)', () => {
+    // Same scenario as above: before fix, totalInvested = 300 but finalValue = 600 → multiple = 2.0
+    // After fix: totalInvested = 600, finalValue = 600 → multiple = 1.0
+    const plan: DcaPlan = {
+      type: 'trendFiltered', cadence: 'monthly', amount: 100, trendWindow: 3, costPct: 0,
+    };
+    const prices: PricePoint[] = [
+      { date: Date.UTC(2023, 0, 1), close: 100 },
+      { date: Date.UTC(2023, 1, 1), close: 100 },
+      { date: Date.UTC(2023, 2, 1), close: 100 },
+      { date: Date.UTC(2023, 3, 1), close: 200 },
+      { date: Date.UTC(2023, 4, 1), close: 200 },
+      { date: Date.UTC(2023, 5, 1), close: 200 },
+    ];
+    const result = new DcaBacktest(plan).run(prices);
+    const multiple = result.finalValue / result.totalInvested;
+    expect(isFinite(multiple)).toBe(true);
+    expect(multiple).toBeGreaterThan(0.9);
+    expect(multiple).toBeLessThan(1.5);
+  });
+
+  it('IRR clamp: 1-week double returns NaN, not billions%', () => {
+    // Invest 100 at 100 on day 0, price doubles to 200 on day 7
+    // Raw annual IRR ≈ 2^(365/7) - 1 ≈ 5e15 — astronomically high
+    // After fix: |r| > 100 threshold → return NaN
+    const plan: DcaPlan = { type: 'vanilla', cadence: 'weekly', amount: 100, costPct: 0 };
+    const prices: PricePoint[] = [
+      { date: 0,               close: 100 },
+      { date: 7 * MS_PER_DAY, close: 200 },
+    ];
+    const result = new DcaBacktest(plan).run(prices);
+    expect(isNaN(result.moneyWeightedReturn)).toBe(true);
   });
 });

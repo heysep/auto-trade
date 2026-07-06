@@ -147,7 +147,9 @@ function computeIRR(
       fa = fm;
     }
   }
-  return (a + b) / 2;
+  const r = (a + b) / 2;
+  if (!isFinite(r) || Math.abs(r) > 500) return NaN;
+  return r;
 }
 
 /** Zero-safe result for degenerate inputs. */
@@ -189,6 +191,7 @@ export class DcaBacktest {
 
     // ── Working state ────────────────────────────────────────────────────────
     const contributions: DcaResult['contributions'] = [];
+    const irrFlows: Array<{ date: number; invested: number }> = [];
     let shares         = 0;
     let uninvestedCash = 0;
     let totalInvested  = 0;
@@ -251,6 +254,8 @@ export class DcaBacktest {
             if (closeSoFar.length < trendWindow) {
               // Warmup: fewer than trendWindow prior closes → skip (dry powder)
               uninvestedCash += plan.amount;
+              totalInvested  += plan.amount;
+              irrFlows.push({ date, invested: plan.amount });
             } else {
               const slice = closeSoFar.slice(-trendWindow);
               const sma   = slice.reduce((acc: number, v: number) => acc + v, 0) / trendWindow;
@@ -258,6 +263,8 @@ export class DcaBacktest {
                 investAmount = plan.amount;
               } else {
                 uninvestedCash += plan.amount;
+                totalInvested  += plan.amount;
+                irrFlows.push({ date, invested: plan.amount });
               }
             }
             break;
@@ -275,6 +282,7 @@ export class DcaBacktest {
             price:    close,
             shares:   sharesBought,
           });
+          irrFlows.push({ date, invested: investAmount });
         }
       }
 
@@ -316,7 +324,7 @@ export class DcaBacktest {
 
     const moneyWeightedReturn =
       finalValue > 0
-        ? computeIRR(contributions, finalValue, firstPt.date, totalDays)
+        ? computeIRR(irrFlows, finalValue, firstPt.date, totalDays)
         : 0;
 
     return {
