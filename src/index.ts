@@ -42,6 +42,7 @@ import { SnapshotScheduler } from './performance/SnapshotScheduler.js';
 import { RebalanceScheduler } from './factor/RebalanceScheduler.js';
 import { PerformanceService } from './performance/PerformanceService.js';
 import { AccountService } from './app/AccountService.js';
+import { DcaService } from './dca/DcaService.js';
 import type { Currency, TradingMode } from './domain/types.js';
 
 const HTTP_PORT = Number(process.env.PORT ?? 3000);
@@ -355,6 +356,11 @@ export function bootstrap() {
   // Real Toss account holdings (read-only). Cached: accountSeq forever, holdings 30 s.
   const accountService = new AccountService({ client });
 
+  // DCA comparison service: daily candles for any symbol (US + KRX) with 5-min TTL cache.
+  const dcaService = new DcaService({
+    getCandles: (s, i, n) => client.getCandles(s, i, n),
+  });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -371,6 +377,7 @@ export function bootstrap() {
     rebalanceScheduler,
     performance: perf,
     account: accountService,
+    dca: dcaService,
   });
   systemRef = system;
 
