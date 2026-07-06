@@ -62,6 +62,10 @@ export interface TradingSystemDeps {
   getPrices?: (symbols: string[]) => Promise<TossPriceItem[]>;
   /** Top-N override for rebalance. Default: 10. */
   factorPortfolioTopN?: number;
+  /** Mode used to query currently-held factor portfolio positions. Default: 'PAPER'. */
+  factorPortfolioMode?: TradingMode;
+  /** Injectable sleep for price-fetch retry backoff. Defaults to real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
   /** Auto-rebalance scheduler. Omitted => autoRebalanceStatus()/setAutoRebalance() return 503. */
   rebalanceScheduler?: RebalanceScheduler;
   /** Performance metrics + equity curve service. Omitted => performance() returns 503. */
@@ -73,8 +77,10 @@ export interface TradingSystemDeps {
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
 export class TradingSystem {
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
   constructor(private readonly deps: TradingSystemDeps) {
     this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   get registry(): StrategyRegistry { return this.deps.registry; }
@@ -241,19 +247,33 @@ export class TradingSystem {
       topSymbols = result.scored.map((s) => s.symbol);
     }
 
-    // Include held symbols so we can price exits
+    // Include held symbols so we can price exits.
+    // Use the portfolio's actual mode (LIVE or PAPER) so LIVE positions are not missed.
+    const portfolioMode = this.deps.factorPortfolioMode ?? 'PAPER';
     const held = this.deps.repo
-      .getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, 'PAPER')
+      .getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, portfolioMode)
       .filter((p) => p.quantity !== 0)
       .map((p) => p.symbol);
 
     const symbols = [...new Set([...topSymbols, ...held])];
 
-    // Fetch prices; any failure aborts with 502
-    let items: TossPriceItem[];
-    try {
-      items = await getPrices(symbols);
-    } catch {
+    // Fetch prices with up to 3 attempts; short backoffs absorb transient post-ranking 429s.
+    // A partial result (some symbols missing) is treated as success — the manager skips
+    // any symbol whose price is absent from the QuoteBook.
+    const MAX_ATTEMPTS = 3;
+    const BACKOFFS_MS = [500, 1000] as const;
+    let items: TossPriceItem[] | undefined;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        items = await getPrices(symbols);
+        break;
+      } catch {
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await this.sleep(BACKOFFS_MS[attempt] ?? 1000);
+        }
+      }
+    }
+    if (items === undefined) {
       return { error: 'price fetch failed', code: 502 };
     }
 

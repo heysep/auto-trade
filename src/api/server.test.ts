@@ -15,7 +15,7 @@ import { FactorRankingService } from '../factor/FactorRankingService.js';
 import { FactorBacktestService } from '../factor/FactorBacktestService.js';
 import { FactorModel } from '../factor/FactorModel.js';
 import type { PromotionInput } from '../strategy/PromotionGate.js';
-import type { Order, Position, Quote } from '../domain/types.js';
+import type { Order, Position, Quote, TradingMode } from '../domain/types.js';
 import type { TossCandle, TossStock, ChartCandle } from '../toss/types.js';
 import type { OrderManager } from '../order/OrderManager.js';
 import type { StrategyView } from '../strategy/StrategyRegistry.js';
@@ -52,6 +52,10 @@ function harness(opts: {
   withPerformanceService?: boolean;
   /** Real account holdings service mock. Omitted => accountHoldings() returns 503. */
   account?: AccountService;
+  /** Mode used to query held positions for the factor portfolio. Omitted => 'PAPER'. */
+  factorPortfolioMode?: TradingMode;
+  /** Injectable sleep for retry backoff. Defaults to real setTimeout; use `async () => {}` in tests. */
+  sleep?: (ms: number) => Promise<void>;
 } = {}) {
   const repo = new InMemoryRepository();
   const book = new QuoteBook();
@@ -98,6 +102,8 @@ function harness(opts: {
     ...(opts.rebalanceScheduler !== undefined ? { rebalanceScheduler: opts.rebalanceScheduler } : {}),
     ...(perfSvc !== undefined ? { performance: perfSvc } : {}),
     ...(opts.account !== undefined ? { account: opts.account } : {}),
+    ...(opts.factorPortfolioMode !== undefined ? { factorPortfolioMode: opts.factorPortfolioMode } : {}),
+    ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
   });
   return { app: buildServer(system, opts.server ?? {}), logger, haltSwitch, deployer, book, repo };
 }
@@ -732,6 +738,138 @@ describe('POST /api/factors/rebalance', () => {
       expect(qRes.statusCode).toBe(200);
       expect(qRes.json().last).toBe(75000);
     }
+  });
+
+  // ── Bug 1a: retry on rate-limit ──────────────────────────────────────────
+  it('retries getPrices up to 3 times: succeeds on 3rd attempt → plan not 502', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    let callCount = 0;
+    const getPrices = vi.fn(async (syms: string[]): Promise<TossPriceItem[]> => {
+      callCount++;
+      if (callCount < 3) throw new Error('429 rate limited');
+      return syms.map((symbol) => ({ symbol, lastPrice: '70000' }));
+    });
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices,
+      factorPortfolioTopN: 2,
+      sleep: async () => {},
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    expect(getPrices).toHaveBeenCalledTimes(3);
+    const plan = res.json() as RebalancePlan;
+    expect(plan.halted).toBe(false);
+    expect(plan.targets).toHaveLength(2);
+  });
+
+  it('returns 502 after 3 failed getPrices attempts', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    const getPrices = vi.fn().mockRejectedValue(new Error('429 rate limited'));
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices,
+      factorPortfolioTopN: 2,
+      sleep: async () => {},
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(502);
+    expect(res.json<{ error: string }>().error).toMatch(/price fetch failed/);
+    expect(getPrices).toHaveBeenCalledTimes(3);
+  });
+
+  // ── Bug 1b: partial result is success ────────────────────────────────────
+  it('treats partial getPrices result as success: missing symbol absent from targets', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    // Only return price for first symbol, silently omit the second
+    const getPrices = async (syms: string[]): Promise<TossPriceItem[]> =>
+      syms.slice(0, 1).map((symbol) => ({ symbol, lastPrice: '70000' }));
+    const { app, haltSwitch, book } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices,
+      factorPortfolioTopN: 2,
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    const plan = res.json() as RebalancePlan;
+    expect(plan).not.toHaveProperty('error');
+    // Second symbol has no price → absent from targets; first symbol has price → present
+    const targetSymbols = plan.targets.map((t) => t.symbol);
+    expect(targetSymbols).not.toContain(SYMBOLS[1]);
+    expect(targetSymbols).toContain(SYMBOLS[0]);
+  });
+
+  // ── Bug 2: held positions use portfolio mode ──────────────────────────────
+  it('held positions query uses factorPortfolioMode: PAPER holdings not treated as held in LIVE mode', async () => {
+    const ranking = makeRanking(SYMBOLS);
+    const capturedCallSymbols: string[] = [];
+    const getPrices = async (syms: string[]): Promise<TossPriceItem[]> => {
+      capturedCallSymbols.push(...syms);
+      return syms.map((symbol) => ({ symbol, lastPrice: '70000' }));
+    };
+    const { app, haltSwitch, book, repo } = harness({
+      factorRanking: ranking as unknown as FactorRankingService,
+      factorPortfolio: new FactorPortfolioManager(
+        {
+          ranking,
+          priceOf: (sym) => book.getQuote(sym)?.last,
+          currentQty: () => 0,
+          heldSymbols: () => [],
+          submitIntent: async () => {},
+          isHalted: () => haltSwitch.halted,
+        },
+        { strategyId: FACTOR_PORTFOLIO_STRATEGY_ID, topN: 2, totalNotional: 10_000_000, currency: 'KRW', mode: 'PAPER' },
+      ),
+      getPrices,
+      factorPortfolioTopN: 2,
+      factorPortfolioMode: 'LIVE',
+    });
+    // Seed a PAPER position for factor portfolio — should NOT be treated as held in LIVE mode
+    repo.upsertPosition({
+      strategyId: FACTOR_PORTFOLIO_STRATEGY_ID,
+      symbol: 'PAPER_ONLY',
+      mode: 'PAPER',
+      quantity: 5,
+      avgPrice: 50_000,
+      realizedPnl: 0,
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/factors/rebalance' });
+    expect(res.statusCode).toBe(200);
+    // 'PAPER_ONLY' must NOT appear in the symbols passed to getPrices when mode=LIVE
+    expect(capturedCallSymbols).not.toContain('PAPER_ONLY');
   });
 
   it('does NOT clobber a fresh worker quote with the synthetic prefetch (M7)', async () => {

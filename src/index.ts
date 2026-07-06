@@ -367,6 +367,7 @@ export function bootstrap() {
     factorPortfolio,
     getPrices: (s) => client.getPrices(s),
     factorPortfolioTopN: config.factor.topN,
+    factorPortfolioMode: config.factor.mode,
     rebalanceScheduler,
     performance: perf,
     account: accountService,
