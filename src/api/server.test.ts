@@ -151,6 +151,9 @@ describe('HTTP API', () => {
     expect(res.body).toContain('긴급 정지');
     expect(res.headers['content-type']).toMatch(/charset=utf-8/);
     expect(res.body).toMatch(/replace\(\/\[&<>/);   // cell() escapes interpolated values (anti-XSS)
+    // DCA auto-invest activation UI
+    expect(res.body).toContain('자동적립 시작');
+    expect(res.body).toContain('활성 적립 플랜');
   });
 
   it('composer page: lightweight-charts CDN, backtest UI, deploy button, anti-XSS helper', async () => {
@@ -172,6 +175,8 @@ describe('HTTP API', () => {
     expect(res.body).toContain('windowNote');      // JS handler for caveat banner
     expect(res.body).toContain('비교 실행');        // run button
     expect(res.body).toContain('DCA Research Lab'); // logo subtitle
+    expect(res.body).toContain('자동적립 시작');
+    expect(res.body).toContain('활성 적립 플랜');
   });
 
   it('404s unknown strategy/quote; 400s a bad mode', async () => {

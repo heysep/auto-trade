@@ -312,6 +312,16 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
 .dca-bench-row td{background:rgba(59,130,246,.07);border-top:1px solid rgba(59,130,246,.2)}
 .dca-best-irr td:nth-child(5){color:#4ade80;font-weight:700}
 .dca-chart-wrap{position:relative;height:240px;border-radius:var(--radius);overflow:hidden;background:#0a0f1e;margin-top:12px}
+/* dca activate note + active plans panel */
+.dca-activate-note{
+  font-size:11px;padding:4px 8px;border-radius:var(--radius);
+  background:rgba(34,197,94,.12);color:#4ade80;border:1px solid rgba(34,197,94,.25);
+}
+.dca-activate-note.err{background:rgba(239,68,68,.12);color:#f87171;border-color:rgba(239,68,68,.25)}
+.dca-active-hdr{
+  padding:10px 16px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;flex-shrink:0;
+}
 </style>
 </head>
 <body>
@@ -771,6 +781,7 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
                   <th class="num">IRR(%)</th>
                   <th class="num">MDD(%)</th>
                   <th class="num">배수</th>
+                  <th>자동적립</th>
                 </tr>
               </thead>
               <tbody id="dca-results-tbody"></tbody>
@@ -781,6 +792,28 @@ input[type="password"]:focus,select:focus,input[type="search"]:focus{
           <div style="font-size:11px;color:var(--muted);margin-bottom:6px">누적 투자 곡선 (기여시점 평가)</div>
           <div class="dca-chart-wrap"><div id="dca-chart" style="width:100%;height:100%"></div></div>
           <div style="font-size:10px;color:var(--muted);margin-top:6px">* 각 기여일의 가격&#xC73C;&#xB85C; 누적 평가 &mdash; MTM 근사치, 참고용</div>
+        </div>
+      </div>
+
+      <!-- ===== ACTIVE DCA PLANS PANEL ===== -->
+      <div class="card" id="dca-active-plans" style="padding:0;overflow:hidden;margin-top:12px">
+        <div class="dca-active-hdr">
+          <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;flex:1">활성 적립 플랜</span>
+          <button class="btn btn-ghost" id="dca-plans-refresh-btn" style="padding:2px 8px;font-size:11px">새로고침</button>
+        </div>
+        <div class="dca-caveat" style="margin:6px 16px 0">페이퍼 전용 &#183; 정기 자동 매수 (AUTO_DCA=1 시 스케줄 자동 실행)</div>
+        <div id="dca-activate-note" style="display:none;font-size:11px;padding:4px 16px 6px"></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>종목</th><th>유형</th><th>주기</th><th class="num">금액</th>
+                <th class="num">투자누계</th><th class="num">보유주</th>
+                <th>시작일</th><th>마지막적립</th><th>액션</th>
+              </tr>
+            </thead>
+            <tbody id="dca-active-plans-body"><tr><td colspan="9" class="empty">로딩 중&#8230;</td></tr></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -926,6 +959,7 @@ function navigate(view) {
     var dcaChartEl = document.getElementById('dca-chart');
     if (dcaChartEl) dcaChart.applyOptions({ width: dcaChartEl.offsetWidth, height: dcaChartEl.offsetHeight });
   }
+  if (view === 'dca') loadActiveDcaPlans();
 }
 document.querySelectorAll('.nav-item').forEach(function(btn) {
   btn.addEventListener('click', function() { navigate(this.dataset.view); });
@@ -2146,6 +2180,7 @@ if (perfModeEl) {
 /* ---- DCA Research Lab ---- */
 /* Plan builder */
 var dcaPlanSeq = 0;
+var _dcaLastPlans = [];
 var dcaDefaultPlans = [
   { type: 'vanilla', cadence: 'monthly', amount: 500, dipExtra: '', dipPct: '', trendWindow: '' },
   { type: 'trendFiltered', cadence: 'monthly', amount: 500, dipExtra: '', dipPct: '', trendWindow: 200 }
@@ -2218,6 +2253,7 @@ function refreshPlanList() {
   });
 }
 refreshPlanList();
+loadActiveDcaPlans();
 
 var dcaAddBtn = document.getElementById('dca-add-plan');
 if (dcaAddBtn) {
@@ -2368,7 +2404,10 @@ function renderDcaTable(data) {
     var i = Number(invested); var f = Number(final);
     return i > 0 ? (f / i).toFixed(2) + 'x' : '—';
   }
+  /* track plans for activate buttons */
+  _dcaLastPlans = [];
   var rows = results.map(function(item, idx) {
+    _dcaLastPlans[idx] = item.plan || null;
     var r = item.result || {};
     var irr = Number(r.moneyWeightedReturn) || 0;
     var isBest = Math.abs(irr - bestIrr) < 1e-9 && bestIrr > -Infinity;
@@ -2377,6 +2416,11 @@ function renderDcaTable(data) {
     var finalVal = Number(r.finalValue) || 0;
     var invested = Number(r.totalInvested) || 0;
     var color = DCA_COLORS[idx % DCA_COLORS.length];
+    var planType = (item.plan && item.plan.type) ? item.plan.type : '';
+    var canActivate = planType === 'vanilla' || planType === 'dipBuying';
+    var activateBtn = canActivate
+      ? '<button class="btn btn-success dca-activate-plan-btn" data-plan-idx="' + idx + '" style="padding:2px 8px;font-size:11px">자동적립 시작</button>'
+      : '<button class="btn btn-ghost" disabled title="라이브 미지원 (백테스트 전용)" style="padding:2px 8px;font-size:11px;opacity:.4;cursor:not-allowed">자동적립 시작</button>';
     return '<tr class="' + cls + '">'
       + '<td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';margin-right:6px"></span>' + esc(item.label || ('플랜' + (idx + 1))) + '</td>'
       + '<td class="num">' + esc(fmtM(r.totalInvested)) + '</td>'
@@ -2385,6 +2429,7 @@ function renderDcaTable(data) {
       + '<td class="' + irrCls + '">' + esc(fmtPct(r.moneyWeightedReturn)) + '</td>'
       + '<td class="num neg">' + esc(fmtPct(r.maxDrawdown)) + '</td>'
       + '<td class="num">' + esc(fmtX(r.totalInvested, r.finalValue)) + '</td>'
+      + '<td>' + activateBtn + '</td>'
       + '</tr>';
   }).join('');
   /* lump-sum benchmark row */
@@ -2399,8 +2444,135 @@ function renderDcaTable(data) {
     + '<td class="num ' + (lumpIrr > 0 ? 'pos' : 'neg') + '">' + esc(fmtPct(lump.moneyWeightedReturn)) + '</td>'
     + '<td class="num neg">' + esc(fmtPct(lump.maxDrawdown)) + '</td>'
     + '<td class="num">' + esc(fmtX(lump.totalInvested, lump.finalValue)) + '</td>'
+    + '<td></td>'
     + '</tr>';
   tbody.innerHTML = rows + benchRow;
+  /* wire activate buttons */
+  tbody.querySelectorAll('.dca-activate-plan-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var idx = Number(this.dataset.planIdx);
+      var plan = _dcaLastPlans[idx];
+      if (!plan) return;
+      var symEl = document.getElementById('dca-symbol');
+      var sym = symEl ? symEl.value.trim().toUpperCase() : '';
+      if (!sym) { alert('종목을 먼저 입력하세요'); return; }
+      activateDcaPlan(sym, plan, btn);
+    });
+  });
+}
+
+/* ---- DCA activate plan ---- */
+function activateDcaPlan(sym, plan, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '처리 중…'; }
+  fetch('/api/dca/plans', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-token': token() },
+    body: JSON.stringify({ symbol: sym, plan: plan }),
+  }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+  .then(function(rd) {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '자동적립 시작'; }
+    var noteEl = document.getElementById('dca-activate-note');
+    if (!rd.ok) {
+      if (noteEl) {
+        noteEl.textContent = '오류: ' + esc(rd.d.error || '활성화 실패');
+        noteEl.className = 'dca-activate-note err';
+        noteEl.style.display = '';
+        setTimeout(function() { if (noteEl) noteEl.style.display = 'none'; }, 8000);
+      }
+      return;
+    }
+    if (noteEl) {
+      noteEl.textContent = '✓ 플랜 활성화됨 · 페이퍼 전용';
+      noteEl.className = 'dca-activate-note';
+      noteEl.style.display = '';
+      setTimeout(function() { if (noteEl) noteEl.style.display = 'none'; }, 5000);
+    }
+    loadActiveDcaPlans();
+  }).catch(function() {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '자동적립 시작'; }
+    alert('네트워크 오류');
+  });
+}
+
+/* ---- Active DCA plans panel ---- */
+function loadActiveDcaPlans() {
+  var tbody = document.getElementById('dca-active-plans-body');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="9" class="empty">로딩 중…</td></tr>';
+  fetch('/api/dca/plans', { headers: { 'x-api-token': token() } })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+    .then(function(rd) {
+      var tbody2 = document.getElementById('dca-active-plans-body');
+      if (!tbody2) return;
+      if (!rd.ok || !Array.isArray(rd.d)) {
+        tbody2.innerHTML = '<tr><td colspan="9" class="empty">플랜 조회 실패</td></tr>';
+        return;
+      }
+      var plans = rd.d;
+      if (!plans.length) {
+        tbody2.innerHTML = '<tr><td colspan="9" class="empty">활성 플랜 없음</td></tr>';
+        return;
+      }
+      function fmtDate(ts) {
+        if (!ts) return '—';
+        var d = new Date(ts);
+        var mo = d.getMonth() + 1;
+        var dy = d.getDate();
+        return d.getFullYear() + '-' + (mo < 10 ? '0' : '') + mo + '-' + (dy < 10 ? '0' : '') + dy;
+      }
+      var typeLabels = { vanilla: '정액', dipBuying: '딥바잍', trendFiltered: '추세필터', valueAveraging: '밸류에버리징', lumpSum: '일시불' };
+      var cadLabels = { monthly: '매월', biweekly: '격주', weekly: '매주' };
+      tbody2.innerHTML = plans.map(function(p) {
+        var pl = p.plan || {};
+        return '<tr>'
+          + '<td>' + esc(String(p.symbol || '')) + '</td>'
+          + '<td>' + esc(typeLabels[pl.type] || String(pl.type || '')) + '</td>'
+          + '<td>' + esc(cadLabels[pl.cadence] || String(pl.cadence || '')) + '</td>'
+          + '<td class="num">$' + esc(String(Number(pl.amount || 0).toFixed(0))) + '</td>'
+          + '<td class="num">$' + esc(String(Number(p.totalInvested || 0).toFixed(2))) + '</td>'
+          + '<td class="num">' + esc(String(Number(p.shares || 0).toFixed(4))) + '</td>'
+          + '<td>' + esc(fmtDate(p.startedAt)) + '</td>'
+          + '<td>' + esc(fmtDate(p.lastContributionAt)) + '</td>'
+          + '<td style="white-space:nowrap">'
+          + '<button class="btn btn-ghost dca-run-now-btn" data-plan-id="' + esc(String(p.id)) + '" style="padding:2px 8px;font-size:11px;margin-right:4px">지금 적립</button>'
+          + '<button class="btn btn-danger dca-stop-btn" data-plan-id="' + esc(String(p.id)) + '" style="padding:2px 8px;font-size:11px">중지</button>'
+          + '</td>'
+          + '</tr>';
+      }).join('');
+      tbody2.querySelectorAll('.dca-run-now-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var pid = this.dataset.planId;
+          var b = this;
+          b.disabled = true;
+          fetch('/api/dca/plans/' + pid + '/run', {
+            method: 'POST',
+            headers: { 'x-api-token': token() },
+          }).then(function() { loadActiveDcaPlans(); })
+            .catch(function() { b.disabled = false; });
+        });
+      });
+      tbody2.querySelectorAll('.dca-stop-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var pid = this.dataset.planId;
+          if (!confirm('플랜 #' + pid + '을(를) 중지하시겠습니까?')) return;
+          var b = this;
+          b.disabled = true;
+          fetch('/api/dca/plans/' + pid, {
+            method: 'DELETE',
+            headers: { 'x-api-token': token() },
+          }).then(function() { loadActiveDcaPlans(); })
+            .catch(function() { b.disabled = false; });
+        });
+      });
+    }).catch(function() {
+      var tbody3 = document.getElementById('dca-active-plans-body');
+      if (tbody3) tbody3.innerHTML = '<tr><td colspan="9" class="empty">네트워크 오류</td></tr>';
+    });
+}
+
+var dcaPlansRefreshBtn = document.getElementById('dca-plans-refresh-btn');
+if (dcaPlansRefreshBtn) {
+  dcaPlansRefreshBtn.addEventListener('click', function() { loadActiveDcaPlans(); });
 }
 
 /* Run DCA compare */
