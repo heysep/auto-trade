@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync } from 'node:fs';
 import { FileStatePersistence } from './StatePersistence.js';
+import { DcaPlanStore } from '../dca/DcaPlanStore.js';
 import { InMemoryRepository } from './repository.js';
 import { InMemoryTradeTracker, type FillContext } from '../risk/TradeTracker.js';
 import { StrategyRegistry } from '../strategy/StrategyRegistry.js';
@@ -164,5 +165,57 @@ describe('FileStatePersistence', () => {
     expect(sp.load(new InMemoryRepository(), new InMemoryTradeTracker(), { registry: reg2, strategies: [tsmom2] })).toBe(true);
     expect(reg2.get(7)?.status).toBe('APPROVED');
     expect((tsmom2.serialize() as { prices: number[] }).prices).toEqual((tsmom.serialize() as { prices: number[] }).prices);
+  });
+
+  it('round-trips DCA plans through save/load', () => {
+    const store1 = new DcaPlanStore();
+    const t0 = 1_700_000_000_000;
+    store1.add({
+      symbol: 'AAPL',
+      plan: { type: 'vanilla', cadence: 'weekly', amount: 100 },
+      startedAt: t0,
+      totalInvested: 300,
+      shares: 1.5,
+      lastContributionAt: t0 + 7 * 86_400_000,
+    });
+    store1.add({
+      symbol: 'TSLA',
+      plan: { type: 'dipBuying', cadence: 'monthly', amount: 500, dipExtra: 200, dipDrawdownPct: 0.05 },
+      startedAt: t0,
+      totalInvested: 500,
+      shares: 2.5,
+      dipPeak: 250,
+    });
+
+    const sp = new FileStatePersistence(FILE);
+    sp.save(new InMemoryRepository(), new InMemoryTradeTracker(), { dcaStore: store1 });
+
+    const store2 = new DcaPlanStore();
+    const ok = sp.load(new InMemoryRepository(), new InMemoryTradeTracker(), { dcaStore: store2 });
+    expect(ok).toBe(true);
+
+    const plans = store2.list();
+    expect(plans).toHaveLength(2);
+
+    const aapl = plans.find(p => p.symbol === 'AAPL');
+    expect(aapl).toBeDefined();
+    expect(aapl?.totalInvested).toBe(300);
+    expect(aapl?.shares).toBe(1.5);
+    expect(aapl?.lastContributionAt).toBe(t0 + 7 * 86_400_000);
+
+    const tsla = plans.find(p => p.symbol === 'TSLA');
+    expect(tsla).toBeDefined();
+    expect(tsla?.totalInvested).toBe(500);
+    expect(tsla?.dipPeak).toBe(250);
+
+    // nextId must be above max restored id (id=2) → next add gets id=3
+    const next = store2.add({
+      symbol: 'GOOG',
+      plan: { type: 'vanilla', cadence: 'weekly', amount: 200 },
+      startedAt: t0,
+      totalInvested: 0,
+      shares: 0,
+    });
+    expect(next.id).toBe(3);
   });
 });

@@ -31,6 +31,9 @@ import { InMemoryTradeTracker } from '../risk/TradeTracker.js';
 import type { AccountService, AccountHoldingsView } from '../app/AccountService.js';
 import { DcaService } from '../dca/DcaService.js';
 import type { DcaCompareResult } from '../dca/DcaService.js';
+import { DcaPlanStore } from '../dca/DcaPlanStore.js';
+import { DcaPlanRunner } from '../dca/DcaPlanRunner.js';
+import type { DcaActivePlan } from '../dca/DcaPlanRunner.js';
 
 const ELIGIBLE: PromotionInput = {
   paperDays: 35, navSnapshotCount: 35, dailyLossViolations: 0,
@@ -56,6 +59,10 @@ function harness(opts: {
   account?: AccountService;
   /** DCA service mock. Omitted => dcaCompare() returns 503. */
   dca?: DcaService;
+  /** DCA plan store. Omitted => plan endpoints return 503. */
+  dcaStore?: DcaPlanStore;
+  /** DCA plan runner. Omitted => runDcaNow() returns 503. */
+  dcaRunner?: DcaPlanRunner;
   /** Mode used to query held positions for the factor portfolio. Omitted => 'PAPER'. */
   factorPortfolioMode?: TradingMode;
   /** Injectable sleep for retry backoff. Defaults to real setTimeout; use `async () => {}` in tests. */
@@ -107,6 +114,8 @@ function harness(opts: {
     ...(perfSvc !== undefined ? { performance: perfSvc } : {}),
     ...(opts.account !== undefined ? { account: opts.account } : {}),
     ...(opts.dca !== undefined ? { dca: opts.dca } : {}),
+    ...(opts.dcaStore !== undefined ? { dcaStore: opts.dcaStore } : {}),
+    ...(opts.dcaRunner !== undefined ? { dcaRunner: opts.dcaRunner } : {}),
     ...(opts.factorPortfolioMode !== undefined ? { factorPortfolioMode: opts.factorPortfolioMode } : {}),
     ...(opts.sleep !== undefined ? { sleep: opts.sleep } : {}),
   });
@@ -1185,5 +1194,174 @@ describe('GET /api/dca/symbols', () => {
     const res = await app.inject({ method: 'GET', url: '/api/dca/symbols?q=SPY' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([]);
+  });
+});
+
+// ── DCA auto-invest plan API ──────────────────────────────────────────────────
+
+describe('DCA auto-invest API', () => {
+  // Helper to build a runner whose submitBuy succeeds and priceOf=200.
+  function makeRunner(submitBuy = vi.fn().mockResolvedValue(undefined)): DcaPlanRunner {
+    return new DcaPlanRunner({
+      priceOf: () => 200,
+      currentShares: () => 0,
+      submitBuy,
+      isHalted: () => false,
+    });
+  }
+
+  it('POST /api/dca/plans returns 503 when dcaStore not wired', async () => {
+    const { app } = harness({});
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'vanilla', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('GET /api/dca/plans returns 503 when dcaStore not wired', async () => {
+    const { app } = harness({});
+    const res = await app.inject({ method: 'GET', url: '/api/dca/plans' });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('DELETE /api/dca/plans/:id returns 503 when dcaStore not wired', async () => {
+    const { app } = harness({});
+    const res = await app.inject({ method: 'DELETE', url: '/api/dca/plans/1' });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('POST /api/dca/plans returns 400 for missing symbol', async () => {
+    const { app } = harness({ dcaStore: new DcaPlanStore() });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plan: { type: 'vanilla', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/symbol/);
+  });
+
+  it('POST /api/dca/plans returns 400 for unsupported type trendFiltered', async () => {
+    const { app } = harness({ dcaStore: new DcaPlanStore() });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'trendFiltered', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/trendFiltered/);
+  });
+
+  it('POST /api/dca/plans returns 400 for unsupported type valueAveraging', async () => {
+    const { app } = harness({ dcaStore: new DcaPlanStore() });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'valueAveraging', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/valueAveraging/);
+  });
+
+  it('POST /api/dca/plans returns 400 for unsupported type lumpSum', async () => {
+    const { app } = harness({ dcaStore: new DcaPlanStore() });
+    const res = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'lumpSum', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/lumpSum/);
+  });
+
+  it('full CRUD: POST → GET → DELETE', async () => {
+    const dcaStore = new DcaPlanStore();
+    const dcaRunner = makeRunner();
+    const { app } = harness({ dcaStore, dcaRunner });
+
+    // Create
+    const create = await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'vanilla', cadence: 'weekly', amount: 100 } }),
+    });
+    expect(create.statusCode).toBe(200);
+    const plan = create.json<DcaActivePlan>();
+    expect(plan.id).toBe(1);
+    expect(plan.symbol).toBe('AAPL');
+    expect(plan.totalInvested).toBe(0);
+
+    // List
+    const list = await app.inject({ method: 'GET', url: '/api/dca/plans' });
+    expect(list.statusCode).toBe(200);
+    expect(list.json<DcaActivePlan[]>()).toHaveLength(1);
+
+    // Delete
+    const del = await app.inject({ method: 'DELETE', url: `/api/dca/plans/${plan.id}` });
+    expect(del.statusCode).toBe(200);
+    expect(del.json<{ ok: boolean }>().ok).toBe(true);
+
+    // List again — empty
+    const list2 = await app.inject({ method: 'GET', url: '/api/dca/plans' });
+    expect(list2.json<DcaActivePlan[]>()).toHaveLength(0);
+  });
+
+  it('DELETE /api/dca/plans/:id returns 404 for unknown id', async () => {
+    const { app } = harness({ dcaStore: new DcaPlanStore() });
+    const res = await app.inject({ method: 'DELETE', url: '/api/dca/plans/999' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('POST /api/dca/plans/:id/run returns 404 for unknown plan', async () => {
+    const dcaStore = new DcaPlanStore();
+    const dcaRunner = makeRunner();
+    const { app } = harness({ dcaStore, dcaRunner });
+    const res = await app.inject({ method: 'POST', url: '/api/dca/plans/999/run' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('POST /api/dca/plans/:id/run returns invested/shares/price on success', async () => {
+    const dcaStore = new DcaPlanStore();
+    const submitBuy = vi.fn().mockResolvedValue(undefined);
+    const dcaRunner = makeRunner(submitBuy);
+    const { app } = harness({ dcaStore, dcaRunner });
+
+    // Create plan
+    await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'vanilla', cadence: 'weekly', amount: 100 } }),
+    });
+
+    const res = await app.inject({ method: 'POST', url: '/api/dca/plans/1/run' });
+    expect(res.statusCode).toBe(200);
+    const result = res.json<{ invested: number; shares: number; price: number }>();
+    expect(result.invested).toBe(100);
+    expect(result.shares).toBeCloseTo(0.5);
+    expect(result.price).toBe(200);
+    expect(submitBuy).toHaveBeenCalledWith('AAPL', 100, 200);
+  });
+
+  it('POST /api/dca/plans/:id/run propagates skipped result (halted)', async () => {
+    const dcaStore = new DcaPlanStore();
+    const dcaRunner = new DcaPlanRunner({
+      priceOf: () => 200,
+      currentShares: () => 0,
+      submitBuy: vi.fn(),
+      isHalted: () => true, // halted
+    });
+    const { app } = harness({ dcaStore, dcaRunner });
+
+    await app.inject({
+      method: 'POST', url: '/api/dca/plans',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol: 'AAPL', plan: { type: 'vanilla', cadence: 'weekly', amount: 100 } }),
+    });
+
+    const res = await app.inject({ method: 'POST', url: '/api/dca/plans/1/run' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ skipped: string }>().skipped).toBe('halted');
   });
 });

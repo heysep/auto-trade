@@ -20,6 +20,8 @@ import type { AccountService, AccountHoldingsView } from './AccountService.js';
 import type { DcaService, DcaCompareResult, DcaCompareInput } from '../dca/DcaService.js';
 import { validatePlan } from '../dca/dcaPlanValidation.js';
 import type { DcaPlan } from '../dca/DcaBacktest.js';
+import type { DcaPlanStore } from '../dca/DcaPlanStore.js';
+import type { DcaPlanRunner, DcaActivePlan } from '../dca/DcaPlanRunner.js';
 
 // Legal status transitions (PLAN §7 lifecycle). REJECTED is terminal.
 const TRANSITIONS: Record<StrategyStatus, StrategyStatus[]> = {
@@ -35,6 +37,9 @@ const GATED: StrategyStatus[] = ['APPROVED', 'LIVE'];   // require approval + pr
 
 /** Reserved strategy id for the AQR 4-Factor Portfolio. Never used by StrategyEngine. */
 export const FACTOR_PORTFOLIO_STRATEGY_ID = 1000;
+
+/** Reserved strategy id for paper-mode DCA auto-invest. Never used by StrategyEngine. */
+export const DCA_STRATEGY_ID = 2000;
 
 export type StatusChangeResult =
   | { ok: true; view: StrategyView }
@@ -77,6 +82,10 @@ export interface TradingSystemDeps {
   account?: AccountService;
   /** DCA comparison service. Omitted => dcaCompare() returns 503. */
   dca?: DcaService;
+  /** Active DCA plan store. Omitted => all DCA plan endpoints return 503. */
+  dcaStore?: DcaPlanStore;
+  /** DCA plan runner (contribute logic). Omitted => runDcaNow() returns 503. */
+  dcaRunner?: DcaPlanRunner;
 }
 
 /** Read/command facade the HTTP API talks to — keeps Fastify routes thin. */
@@ -402,6 +411,147 @@ export class TradingSystem {
       console.error('[dca] compare failed:', err instanceof Error ? err.message : String(err));
       return { error: 'upstream fetch failed', code: 502 };
     }
+  }
+
+  // ── DCA auto-invest plan management ──────────────────────────────────────────
+
+  /** Live-supported plan types. Others are rejected at activation. */
+  private static readonly LIVE_SUPPORTED_TYPES = new Set(['vanilla', 'dipBuying']);
+
+  /**
+   * Validate and activate a new DCA plan.
+   *
+   * - Returns 503 when dcaStore not wired.
+   * - Returns 400 for missing/invalid fields or unsupported plan types.
+   * - Supported types: vanilla, dipBuying.
+   * - Rejected: trendFiltered (needs SMA history), valueAveraging (needs
+   *   portfolio target), lumpSum (one-shot, not applicable live).
+   */
+  activateDcaPlan(
+    input: { symbol: unknown; plan: unknown },
+  ): DcaActivePlan | { error: string; code: number } {
+    const store = this.deps.dcaStore;
+    if (store === undefined) return { error: 'DCA store not wired', code: 503 };
+
+    if (typeof input.symbol !== 'string' || input.symbol.trim() === '') {
+      return { error: 'symbol is required', code: 400 };
+    }
+
+    const planRaw = input.plan;
+    if (typeof planRaw !== 'object' || planRaw === null) {
+      return { error: 'plan is required', code: 400 };
+    }
+    const p = planRaw as Record<string, unknown>;
+
+    if (typeof p['type'] !== 'string') {
+      return { error: 'plan.type is required', code: 400 };
+    }
+    if (typeof p['cadence'] !== 'string') {
+      return { error: 'plan.cadence is required', code: 400 };
+    }
+    if (typeof p['amount'] !== 'number' || p['amount'] <= 0) {
+      return { error: 'plan.amount must be a positive number', code: 400 };
+    }
+
+    const planType = p['type'];
+    if (!TradingSystem.LIVE_SUPPORTED_TYPES.has(planType)) {
+      return {
+        error: `plan type '${planType}' is not live-supported; use vanilla or dipBuying`,
+        code: 400,
+      };
+    }
+
+    const cadence = p['cadence'];
+    if (cadence !== 'weekly' && cadence !== 'biweekly' && cadence !== 'monthly') {
+      return { error: `plan.cadence must be weekly, biweekly, or monthly`, code: 400 };
+    }
+
+    // Validate dipBuying-specific fields if present.
+    const dipExtra       = p['dipExtra']       !== undefined ? Number(p['dipExtra'])       : undefined;
+    const dipDrawdownPct = p['dipDrawdownPct'] !== undefined ? Number(p['dipDrawdownPct']) : undefined;
+
+    if (dipExtra !== undefined && (Number.isNaN(dipExtra) || dipExtra < 0)) {
+      return { error: 'plan.dipExtra must be a non-negative number', code: 400 };
+    }
+    if (dipDrawdownPct !== undefined && (Number.isNaN(dipDrawdownPct) || dipDrawdownPct <= 0 || dipDrawdownPct >= 1)) {
+      return { error: 'plan.dipDrawdownPct must be between 0 and 1 exclusive', code: 400 };
+    }
+
+    const planObj: DcaPlan = {
+      type:    planType as 'vanilla' | 'dipBuying',
+      cadence,
+      amount:  p['amount'] as number,
+    };
+    if (dipExtra !== undefined)       planObj.dipExtra       = dipExtra;
+    if (dipDrawdownPct !== undefined) planObj.dipDrawdownPct = dipDrawdownPct;
+
+    const active = store.add({
+      symbol:        input.symbol.trim(),
+      plan:          planObj,
+      startedAt:     this.now(),
+      totalInvested: 0,
+      shares:        0,
+    });
+
+    return active;
+  }
+
+  /** List all active DCA plans. Returns 503 when dcaStore not wired. */
+  listDcaPlans(): DcaActivePlan[] | { error: string; code: number } {
+    const store = this.deps.dcaStore;
+    if (store === undefined) return { error: 'DCA store not wired', code: 503 };
+    return store.list();
+  }
+
+  /**
+   * Remove an active DCA plan.
+   * Returns 503 when not wired; false when id unknown (caller should 404).
+   */
+  deactivateDcaPlan(id: number): boolean | { error: string; code: number } {
+    const store = this.deps.dcaStore;
+    if (store === undefined) return { error: 'DCA store not wired', code: 503 };
+    return store.remove(id);
+  }
+
+  /**
+   * Execute one contribution for plan `id` immediately (on-demand trigger).
+   *
+   * - 503 when dcaStore/dcaRunner absent.
+   * - 404 when plan id unknown.
+   * - Forwards contribute() result: { invested, shares, price } or { skipped }.
+   * - On success (dipBuying) updates dipPeak in store.
+   */
+  async runDcaNow(
+    id: number,
+  ): Promise<{ invested: number; shares: number; price: number } | { skipped: string } | { error: string; code: number }> {
+    const store  = this.deps.dcaStore;
+    const runner = this.deps.dcaRunner;
+    if (store === undefined || runner === undefined) {
+      return { error: 'DCA store/runner not wired', code: 503 };
+    }
+
+    const plan = store.list().find((p) => p.id === id);
+    if (plan === undefined) return { error: `DCA plan ${id} not found`, code: 404 };
+
+    const result = await runner.contribute(plan);
+
+    if ('invested' in result) {
+      const now = this.now();
+      const newPeak =
+        plan.plan.type === 'dipBuying'
+          ? Math.max(plan.dipPeak ?? 0, result.price)
+          : undefined;
+
+      const patch = {
+        lastContributionAt: now,
+        totalInvested: plan.totalInvested + result.invested,
+        shares: plan.shares + result.shares,
+        ...(newPeak !== undefined ? { dipPeak: newPeak } : {}),
+      };
+      store.update(id, patch);
+    }
+
+    return result;
   }
 
   async backtest(input: {

@@ -319,6 +319,40 @@ export function buildServer(system: TradingSystem, opts: ServerOptions = {}): Fa
     return system.searchSymbols(q.q ?? '');
   });
 
+  // --- DCA auto-invest plans ---
+
+  app.post('/api/dca/plans', async (req, reply) => {
+    const body = (req.body ?? {}) as { symbol?: unknown; plan?: unknown };
+    const result = system.activateDcaPlan({ symbol: body.symbol, plan: body.plan });
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
+  app.get('/api/dca/plans', async (_req, reply) => {
+    const result = system.listDcaPlans();
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
+  app.delete('/api/dca/plans/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid plan id' });
+    const result = system.deactivateDcaPlan(id);
+    if (typeof result === 'object' && 'error' in result) {
+      return reply.code(result.code).send({ error: result.error });
+    }
+    if (result === false) return reply.code(404).send({ error: 'plan not found' });
+    return { ok: true };
+  });
+
+  app.post('/api/dca/plans/:id/run', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid plan id' });
+    const result = await system.runDcaNow(id);
+    if ('error' in result) return reply.code(result.code).send({ error: result.error });
+    return result;
+  });
+
   return app;
 }
 

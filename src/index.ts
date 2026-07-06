@@ -25,7 +25,10 @@ import { makeDailyRangeProvider } from './market/dailyRange.js';
 import type { Broker } from './broker/Broker.js';
 import { HaltSwitch } from './app/HaltSwitch.js';
 import { FileHaltStore } from './app/HaltStore.js';
-import { TradingSystem, FACTOR_PORTFOLIO_STRATEGY_ID } from './app/TradingSystem.js';
+import { TradingSystem, FACTOR_PORTFOLIO_STRATEGY_ID, DCA_STRATEGY_ID } from './app/TradingSystem.js';
+import { DcaPlanStore } from './dca/DcaPlanStore.js';
+import { DcaPlanRunner } from './dca/DcaPlanRunner.js';
+import { DcaScheduler } from './dca/DcaScheduler.js';
 import { StrategyDeployer } from './app/StrategyDeployer.js';
 import { WatchList } from './market/WatchList.js';
 import { SymbolCatalog } from './market/SymbolCatalog.js';
@@ -103,12 +106,17 @@ export function bootstrap() {
     // loss limits. TSMOM strategies stay on the 10M/30% config.
     // C3: daytrade (id=3) runs on DAYTRADE_BUDGET with its own tighter loss limits.
     const isFactorPortfolio = strategy.id === FACTOR_PORTFOLIO_STRATEGY_ID;
-    const isDaytrade = strategy.id === DAYTRADE_STRATEGY_ID;
+    const isDaytrade        = strategy.id === DAYTRADE_STRATEGY_ID;
+    const isDca             = strategy.id === DCA_STRATEGY_ID;
+    // DCA runs on a large virtual capital so the risk manager never hard-blocks fractional buys.
+    const DCA_LIMITS = { maxPositionPct: 100, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 100 };
     const capital = isFactorPortfolio ? FACTOR_PORTFOLIO_CAPITAL
                   : isDaytrade ? config.daytrade.budget
+                  : isDca ? 100_000_000
                   : STRATEGY_CAPITAL;
     const limits  = isFactorPortfolio ? FACTOR_PORTFOLIO_LIMITS
                   : isDaytrade ? DAYTRADE_RISK_LIMITS
+                  : isDca ? DCA_LIMITS
                   : RISK_LIMITS;
 
     const positions = repo.getPositions(strategy.id, strategy.mode);
@@ -207,6 +215,18 @@ export function bootstrap() {
   const factorRegistryStatus = config.factor.mode === 'LIVE' ? 'LIVE' as const : 'PAPER_TESTING' as const;
   registry.register(factorStrategy, 'AQR 4-Factor Portfolio', factorRegistryStatus);
 
+  // Reserved stub for DCA auto-invest (id=2000). Registered in registry only —
+  // NOT in StrategyEngine tick loop. Orders placed by DcaScheduler / DcaPlanRunner.
+  // Always PAPER: DCA is paper-mode only in this build.
+  const dcaStrategy: Strategy = {
+    id: DCA_STRATEGY_ID,
+    symbols: new Set<string>(),
+    currency: 'KRW',
+    mode: 'PAPER',
+    evaluate: () => null,
+  };
+  registry.register(dcaStrategy, 'DCA Auto-Invest', 'PAPER_TESTING');
+
   // Build the watchList seeded from static strategies' symbols (deduped — WatchList.add is idempotent).
   const watchList = new WatchList(
     strategies.flatMap((s) => [...s.symbols].map((symbol) => ({ symbol, market: marketOf(s.currency) }))),
@@ -224,9 +244,13 @@ export function bootstrap() {
     strategies.length + 1,
   );
 
+  // DCA plan store: declared here so statePersistence.load() can restore persisted plans
+  // before the runner/scheduler are wired below.
+  const dcaStore = new DcaPlanStore();
+
   // Restore prior run's orders/positions/equity/streaks + registry statuses + strategy
   // indicator windows, now that strategies are registered. Throws on a version mismatch.
-  if (statePersistence.load(repo, tracker, { registry, strategies, deployer })) {
+  if (statePersistence.load(repo, tracker, { registry, strategies, deployer, dcaStore })) {
     console.log('restored trading state from disk');
   }
 
@@ -341,7 +365,9 @@ export function bootstrap() {
   );
 
   const AUTO_REBALANCE = process.env.AUTO_REBALANCE === '1';
+  const AUTO_DCA       = process.env.AUTO_DCA       === '1';
   const REBALANCE_INTERVAL_MS = Number(process.env.REBALANCE_INTERVAL_MS ?? '') || 86_400_000;
+  const DCA_INTERVAL_MS       = Number(process.env.DCA_INTERVAL_MS       ?? '') || 3_600_000;
 
   // Construct scheduler before system (rebalance closure captures systemRef lazily to avoid circular dep).
   let systemRef!: TradingSystem;
@@ -361,6 +387,52 @@ export function bootstrap() {
     getCandles: (s, i, n) => client.getCandles(s, i, n),
   });
 
+  // DCA auto-invest: contribution runner and timer scheduler wire against the dcaStore
+  // already declared (and loaded from disk) above.
+  // Strategy stub id=2000 is PAPER-only; submitBuy routes through orderManager like factorPortfolio.
+  const dcaRunner = new DcaPlanRunner({
+    priceOf: (symbol) => book.getQuote(symbol)?.last,
+    currentShares: (symbol) => {
+      const pos = repo.getPosition(DCA_STRATEGY_ID, symbol, 'PAPER');
+      return pos?.quantity ?? 0;
+    },
+    submitBuy: async (symbol, usdAmount, price) => {
+      // Ensure a quote exists before calling handleIntent.
+      let quote = book.getQuote(symbol);
+      if (quote === undefined) {
+        const items = await client.getPrices([symbol]).catch(() => []);
+        for (const item of items) {
+          const last = Number(item.lastPrice);
+          if (Number.isFinite(last) && last > 0 && item.symbol === symbol) {
+            book.set({ symbol: item.symbol, currency: 'KRW', bid: last, ask: last, last, ts: Date.now() });
+          }
+        }
+        quote = book.getQuote(symbol);
+      }
+      if (quote === undefined) throw new Error(`[dca] no quote for ${symbol}`);
+      const quantity = usdAmount / price;
+      const outcome = await orderManager.handleIntent(
+        dcaStrategy,
+        { side: 'BUY', quantity, orderType: 'MARKET', reason: `DCA buy ${symbol} ₩${usdAmount}` },
+        quote,
+      );
+      if (outcome.status !== 'placed') {
+        const msg = outcome.status === 'blocked'
+          ? (outcome.reason ?? 'risk blocked')
+          : String((outcome as { error?: unknown }).error ?? outcome.status);
+        throw new Error(`[dca] order not placed for ${symbol}: ${msg}`);
+      }
+    },
+    isHalted: () => haltSwitch.halted,
+  });
+  const dcaScheduler = new DcaScheduler({
+    store: dcaStore,
+    runner: dcaRunner,
+    isHalted: () => haltSwitch.halted,
+    intervalMs: DCA_INTERVAL_MS,
+    logger: { log: (e) => logger.log({ type: 'DCA_ERROR', message: String(e), at: Date.now() }) },
+  });
+
   const system = new TradingSystem({
     repo, book, registry, logger, haltSwitch,
     // Real §7 metrics: APPROVED/LIVE now unlock once 30+ days / 50+ trades / criteria are met.
@@ -378,6 +450,8 @@ export function bootstrap() {
     performance: perf,
     account: accountService,
     dca: dcaService,
+    dcaStore,
+    dcaRunner,
   });
   systemRef = system;
 
@@ -387,12 +461,18 @@ export function bootstrap() {
     console.log(`[rebalance] auto-scheduler armed, interval=${REBALANCE_INTERVAL_MS}ms`);
   }
 
+  if (AUTO_DCA) {
+    dcaScheduler.start();
+    logger.log({ type: 'DCA_SCHEDULER_ARMED', message: `[dca] auto-invest scheduler armed, interval=${DCA_INTERVAL_MS}ms`, at: Date.now() });
+    console.log(`[dca] auto-invest scheduler armed, interval=${DCA_INTERVAL_MS}ms`);
+  }
+
   const server = buildServer(system, { ...(process.env.API_TOKEN ? { authToken: process.env.API_TOKEN } : {}) });
 
   return {
     client, repo, book, logger, tracker, haltSwitch, registry, system, server, statePersistence,
     paperBroker, engine, worker, reconciliation, equityRecorder, snapshotScheduler, perf, strategies,
-    deployer, watchList, rebalanceScheduler, accountService,
+    deployer, watchList, rebalanceScheduler, accountService, dcaStore, dcaScheduler,
     setActiveLiveBroker: (b: Broker) => { activeLiveBroker = b; },
   };
 }
@@ -400,7 +480,7 @@ export function bootstrap() {
 export async function main(): Promise<void> {
   const {
     worker, reconciliation, server, system, repo, tracker, statePersistence,
-    registry, strategies, deployer, rebalanceScheduler,
+    registry, strategies, deployer, rebalanceScheduler, dcaStore, dcaScheduler,
     client, haltSwitch, setActiveLiveBroker,
   } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
@@ -449,7 +529,7 @@ export async function main(): Promise<void> {
 
   // Persist state periodically + on shutdown so a restart resumes from disk.
   const saveState = () => {
-    try { statePersistence.save(repo, tracker, { registry, strategies, deployer }); }
+    try { statePersistence.save(repo, tracker, { registry, strategies, deployer, dcaStore }); }
     catch (e) { console.error('state save failed:', e); }
   };
   const saveTimer = setInterval(saveState, STATE_SAVE_MS);
@@ -461,6 +541,7 @@ export async function main(): Promise<void> {
     shuttingDown = true;
     clearInterval(saveTimer);
     rebalanceScheduler.stop();
+    dcaScheduler.stop();
     saveState();
     worker.stop();
     await server.close().catch(() => { /* already closing */ });
