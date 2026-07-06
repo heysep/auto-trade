@@ -69,8 +69,22 @@ export function resolveDaytradeMode(mode: string | undefined, liveEnabled: boole
   return 'PAPER';
 }
 
+/**
+ * Pure helper — exported for unit tests; no process.env side-effects.
+ * Returns 'LIVE' ONLY when mode is exactly 'LIVE' AND liveEnabled is true.
+ * Any other combination returns 'PAPER' (defense in depth: fail-safe to paper).
+ */
+export function resolveFactorMode(mode: string | undefined, liveEnabled: boolean): TradingMode {
+  if (mode === 'LIVE' && liveEnabled) return 'LIVE';
+  if (mode === 'LIVE' && !liveEnabled) {
+    console.warn('[factor] FACTOR_MODE=LIVE requires LIVE_ENABLED=1; forcing PAPER');
+  }
+  return 'PAPER';
+}
+
 const _liveEnabled = process.env.LIVE_ENABLED === '1';
 const _daytradeMode = resolveDaytradeMode(process.env.DAYTRADE_MODE, _liveEnabled);
+const _factorMode = resolveFactorMode(process.env.FACTOR_MODE, _liveEnabled);
 
 export const config = {
   toss: {
@@ -111,5 +125,19 @@ export const config = {
     mode: _daytradeMode,
     /** True when LIVE_ENABLED=1 — gates LiveBroker construction. */
     liveEnabled: _liveEnabled,
+  },
+  factor: {
+    /** Total notional budget for the AQR factor portfolio in KRW. Default ₩100M. */
+    notional: (() => {
+      const v = Number(process.env.FACTOR_NOTIONAL ?? '100000000');
+      return Number.isFinite(v) && v > 0 ? v : 100_000_000;
+    })(),
+    /** Number of top-ranked symbols to hold. Default 10. */
+    topN: (() => {
+      const v = Math.floor(Number(process.env.FACTOR_TOPN ?? '10'));
+      return Number.isFinite(v) && v > 0 ? v : 10;
+    })(),
+    /** Resolved trading mode: LIVE only when LIVE_ENABLED=1 AND FACTOR_MODE=LIVE. */
+    mode: _factorMode,
   },
 } as const;

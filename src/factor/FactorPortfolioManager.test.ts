@@ -548,3 +548,124 @@ describe('FactorPortfolioManager C1+C2 integration (real OrderManager/RiskManage
     }
   });
 });
+
+// ── Suite 8: Affordability-fill — ₩100k budget walks past expensive symbols ──
+describe('FactorPortfolioManager.rebalance – affordability-fill (₩100k budget)', () => {
+  it('fills topN=3 slots by walking past unaffordable top-ranked symbols', async () => {
+    // Ranking (rank order): EXPENSIVE(₩2.2M), CHEAP1(₩20k), EXPENSIVE2(₩300k), CHEAP2(₩15k), CHEAP3(₩30k)
+    // Budget ₩100k, topN=3 → perName = 100_000/3 ≈ ₩33,333
+    //   EXPENSIVE:  floor(33333/2_200_000) = 0 → unaffordable (slot NOT consumed)
+    //   CHEAP1:     floor(33333/20_000)    = 1 → slot 1
+    //   EXPENSIVE2: floor(33333/300_000)   = 0 → unaffordable (slot NOT consumed)
+    //   CHEAP2:     floor(33333/15_000)    = 2 → slot 2
+    //   CHEAP3:     floor(33333/30_000)    = 1 → slot 3  (topN filled, loop stops)
+    const recorder = makeRecorder();
+    const prices: Record<string, number> = {
+      EXPENSIVE:  2_200_000,
+      CHEAP1:     20_000,
+      EXPENSIVE2: 300_000,
+      CHEAP2:     15_000,
+      CHEAP3:     30_000,
+    };
+    const deps: FactorPortfolioDeps = {
+      ranking: makeRanking(['EXPENSIVE', 'CHEAP1', 'EXPENSIVE2', 'CHEAP2', 'CHEAP3']),
+      currentQty: () => 0,
+      heldSymbols: () => [],
+      priceOf: (symbol) => prices[symbol],
+      submitIntent: recorder.submitIntent,
+      isHalted: () => false,
+      now: () => 10_000,
+    };
+    const mgr = new FactorPortfolioManager(deps, {
+      strategyId: 42,
+      topN: 3,
+      totalNotional: 100_000,
+      currency: 'KRW',
+      mode: 'PAPER',
+    });
+    const plan = await mgr.rebalance();
+
+    expect(plan.halted).toBe(false);
+
+    // Exactly 3 slots filled with affordable symbols
+    expect(plan.targets).toHaveLength(3);
+    const targetSymbols = plan.targets.map((t) => t.symbol);
+    expect(targetSymbols).toContain('CHEAP1');
+    expect(targetSymbols).toContain('CHEAP2');
+    expect(targetSymbols).toContain('CHEAP3');
+    expect(targetSymbols).not.toContain('EXPENSIVE');
+    expect(targetSymbols).not.toContain('EXPENSIVE2');
+
+    // The 2 unaffordable symbols appear in skipped
+    expect(plan.skipped).toHaveLength(2);
+    const skippedSymbols = plan.skipped.map((s) => s.symbol);
+    expect(skippedSymbols).toContain('EXPENSIVE');
+    expect(skippedSymbols).toContain('EXPENSIVE2');
+    for (const s of plan.skipped) {
+      expect(s.reason).toBe('unaffordable');
+    }
+
+    // 3 BUY orders, each with qty >= 1
+    expect(plan.ordersSubmitted).toHaveLength(3);
+    for (const o of plan.ordersSubmitted) {
+      expect(o.side).toBe('BUY');
+      expect(o.qty).toBeGreaterThanOrEqual(1);
+    }
+
+    // Verify target quantities (perName = 100_000/3 = 33_333.33…)
+    const perName = 100_000 / 3;
+    const tCheap1 = plan.targets.find((t) => t.symbol === 'CHEAP1')!;
+    expect(tCheap1.targetQty).toBe(Math.floor(perName / 20_000));   // 1
+    expect(tCheap1.targetQty).toBeGreaterThanOrEqual(1);
+
+    const tCheap2 = plan.targets.find((t) => t.symbol === 'CHEAP2')!;
+    expect(tCheap2.targetQty).toBe(Math.floor(perName / 15_000));   // 2
+    expect(tCheap2.targetQty).toBeGreaterThanOrEqual(1);
+
+    const tCheap3 = plan.targets.find((t) => t.symbol === 'CHEAP3')!;
+    expect(tCheap3.targetQty).toBe(Math.floor(perName / 30_000));   // 1
+    expect(tCheap3.targetQty).toBeGreaterThanOrEqual(1);
+  });
+
+  it('exits a held symbol that is no longer in the filled target set', async () => {
+    // EXPENSIVE was held from a prior rebalance; new run can't afford it → exit SELL
+    const recorder = makeRecorder();
+    const prices: Record<string, number> = { EXPENSIVE: 2_200_000, CHEAP: 20_000 };
+    const deps: FactorPortfolioDeps = {
+      ranking: makeRanking(['EXPENSIVE', 'CHEAP']),
+      currentQty: (sym) => ({ EXPENSIVE: 1, CHEAP: 0 })[sym] ?? 0,
+      heldSymbols: () => ['EXPENSIVE'],
+      priceOf: (symbol) => prices[symbol],
+      submitIntent: recorder.submitIntent,
+      isHalted: () => false,
+      now: () => 11_000,
+    };
+    // topN=1, budget=100k → perName=100k
+    // EXPENSIVE: floor(100000/2200000)=0 → unaffordable → skip, slot NOT consumed
+    // CHEAP: floor(100000/20000)=5 → slot 1
+    // EXPENSIVE is held but not in targets → exit SELL
+    const mgr = new FactorPortfolioManager(deps, {
+      strategyId: 42,
+      topN: 1,
+      totalNotional: 100_000,
+      currency: 'KRW',
+      mode: 'PAPER',
+    });
+    const plan = await mgr.rebalance();
+
+    expect(plan.targets).toHaveLength(1);
+    expect(plan.targets[0]!.symbol).toBe('CHEAP');
+
+    // EXPENSIVE was held but is unaffordable → appears in skipped (unaffordable) AND sells (exit)
+    expect(plan.skipped.some((s) => s.symbol === 'EXPENSIVE' && s.reason === 'unaffordable')).toBe(true);
+    expect(plan.sells).toHaveLength(1);
+    expect(plan.sells[0]!.symbol).toBe('EXPENSIVE');
+
+    // Order sequence: SELL EXPENSIVE first, then BUY CHEAP
+    const sellIdx = recorder.calls.findIndex((c) => c.symbol === 'EXPENSIVE' && c.side === 'SELL');
+    const buyIdx  = recorder.calls.findIndex((c) => c.symbol === 'CHEAP' && c.side === 'BUY');
+    expect(sellIdx).toBeGreaterThanOrEqual(0);
+    expect(buyIdx).toBeGreaterThanOrEqual(0);
+    expect(sellIdx).toBeLessThan(buyIdx);
+  });
+});

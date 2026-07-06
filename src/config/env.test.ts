@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveDaytradeMode, parseDaytradeSymbols } from './env.js';
+import { resolveDaytradeMode, parseDaytradeSymbols, resolveFactorMode } from './env.js';
 
 describe('resolveDaytradeMode', () => {
   it('returns LIVE when mode=LIVE and liveEnabled=true', () => {
@@ -58,5 +58,45 @@ describe('parseDaytradeSymbols', () => {
 
   it('filters out empty segments from malformed input (e.g. trailing commas)', () => {
     expect(parseDaytradeSymbols('011200,,035720,', undefined)).toEqual(['011200', '035720']);
+  });
+});
+
+describe('resolveFactorMode', () => {
+  it('returns LIVE when mode=LIVE and liveEnabled=true', () => {
+    expect(resolveFactorMode('LIVE', true)).toBe('LIVE');
+  });
+
+  it('returns PAPER when mode=LIVE but liveEnabled=false (LIVE_ENABLED flag not set)', () => {
+    expect(resolveFactorMode('LIVE', false)).toBe('PAPER');
+  });
+
+  it('returns PAPER when mode=PAPER regardless of liveEnabled', () => {
+    expect(resolveFactorMode('PAPER', true)).toBe('PAPER');
+    expect(resolveFactorMode('PAPER', false)).toBe('PAPER');
+  });
+
+  it('returns PAPER for unknown/empty mode values (defense in depth)', () => {
+    expect(resolveFactorMode('', false)).toBe('PAPER');
+    expect(resolveFactorMode('LIVE_MAYBE', true)).toBe('PAPER');
+  });
+
+  it('returns PAPER when mode is undefined', () => {
+    expect(resolveFactorMode(undefined, true)).toBe('PAPER');
+    expect(resolveFactorMode(undefined, false)).toBe('PAPER');
+  });
+});
+
+describe('factor config env parsing', () => {
+  it('resolveFactorMode: LIVE requires BOTH FACTOR_MODE=LIVE AND liveEnabled=true', () => {
+    // Matrix: only one combination yields LIVE
+    expect(resolveFactorMode('LIVE', true)).toBe('LIVE');
+    expect(resolveFactorMode('LIVE', false)).toBe('PAPER');
+    expect(resolveFactorMode('PAPER', true)).toBe('PAPER');
+    expect(resolveFactorMode(undefined, true)).toBe('PAPER');
+  });
+
+  it('resolveFactorMode: default (undefined mode) is always PAPER', () => {
+    expect(resolveFactorMode(undefined, false)).toBe('PAPER');
+    expect(resolveFactorMode(undefined, true)).toBe('PAPER');
   });
 });

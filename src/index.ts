@@ -53,10 +53,15 @@ const STATE_SAVE_MS = 60_000;
 const STRATEGY_CAPITAL = 10_000_000;
 const RISK_LIMITS = { maxPositionPct: 30, dailyMaxLoss: 500_000, maxConsecutiveLosses: 5 };
 
-// C1: Factor portfolio uses a much larger capital base and looser concentration limits.
-// TSMOM strategies remain on the 10M/30% config above.
-const FACTOR_PORTFOLIO_CAPITAL = 100_000_000;
-const FACTOR_PORTFOLIO_LIMITS = { maxPositionPct: 15, dailyMaxLoss: 10_000_000, maxConsecutiveLosses: 10 };
+// C1: Factor portfolio capital and risk limits scale from env (FACTOR_NOTIONAL / FACTOR_TOPN).
+// With the default ₩100M / topN=10: maxPositionPct=15%, dailyMaxLoss=₩10M.
+// With ₩100k / topN=3: maxPositionPct=51% (ceil(100/3)*1.5=51), dailyMaxLoss=₩10k.
+const FACTOR_PORTFOLIO_CAPITAL = config.factor.notional;
+const FACTOR_PORTFOLIO_LIMITS = {
+  maxPositionPct: Math.min(100, Math.max(15, Math.ceil(100 / config.factor.topN) * 1.5)),
+  dailyMaxLoss: Math.max(1, Math.round(config.factor.notional * 0.1)),
+  maxConsecutiveLosses: 10,
+};
 
 // id=3: Volatility-breakout day-trade. Budget is the per-day capital ceiling;
 // 10% daily-loss cap (realized+unrealized) → halt; 3 losing round-trips → halt.
@@ -190,14 +195,16 @@ export function bootstrap() {
 
   // Reserved stub for the AQR 4-Factor Portfolio (id=1000). Registered in registry only —
   // NOT in StrategyEngine tick loop. Lifecycle managed by rebalanceFactorPortfolio() HTTP trigger.
+  // Mode is env-gated: LIVE requires LIVE_ENABLED=1 AND FACTOR_MODE=LIVE (same pattern as daytrade).
   const factorStrategy: Strategy = {
     id: FACTOR_PORTFOLIO_STRATEGY_ID,
     symbols: new Set<string>(),
     currency: 'KRW',
-    mode: 'PAPER',
+    mode: config.factor.mode,
     evaluate: () => null,
   };
-  registry.register(factorStrategy, 'AQR 4-Factor Portfolio', 'PAPER_TESTING');
+  const factorRegistryStatus = config.factor.mode === 'LIVE' ? 'LIVE' as const : 'PAPER_TESTING' as const;
+  registry.register(factorStrategy, 'AQR 4-Factor Portfolio', factorRegistryStatus);
 
   // Build the watchList seeded from static strategies' symbols (deduped — WatchList.add is idempotent).
   const watchList = new WatchList(
@@ -228,7 +235,7 @@ export function bootstrap() {
     repo,
     book,
     capitalFor: (id: number) =>
-      id === FACTOR_PORTFOLIO_STRATEGY_ID ? FACTOR_PORTFOLIO_CAPITAL
+      id === FACTOR_PORTFOLIO_STRATEGY_ID ? config.factor.notional
       : id === DAYTRADE_STRATEGY_ID ? config.daytrade.budget
       : STRATEGY_CAPITAL,
   });
@@ -288,18 +295,19 @@ export function bootstrap() {
     model: new FactorModel(),
   });
 
-  // FactorPortfolioManager: rebalance-driven (HTTP trigger), PAPER only.
+  // FactorPortfolioManager: rebalance-driven (HTTP trigger).
+  // Mode is env-gated: LIVE requires LIVE_ENABLED=1 AND FACTOR_MODE=LIVE.
   // submitIntent bridges PortfolioOrderIntent → OrderManager.handleIntent.
   const factorPortfolio = new FactorPortfolioManager(
     {
       ranking: factorRanking,
       priceOf: (sym) => book.getQuote(sym)?.last,
       currentQty: (sym) => {
-        const pos = repo.getPosition(FACTOR_PORTFOLIO_STRATEGY_ID, sym, 'PAPER');
+        const pos = repo.getPosition(FACTOR_PORTFOLIO_STRATEGY_ID, sym, config.factor.mode);
         return pos?.quantity ?? 0;
       },
       heldSymbols: () =>
-        repo.getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, 'PAPER')
+        repo.getPositions(FACTOR_PORTFOLIO_STRATEGY_ID, config.factor.mode)
           .filter((p) => p.quantity !== 0)
           .map((p) => p.symbol),
       submitIntent: async (pIntent) => {
@@ -324,10 +332,10 @@ export function bootstrap() {
     },
     {
       strategyId: FACTOR_PORTFOLIO_STRATEGY_ID,
-      topN: 10,
-      totalNotional: 100_000_000,   // ₩100M so each of 10 large-caps gets a fillable ~₩10M slice
+      topN: config.factor.topN,
+      totalNotional: config.factor.notional,
       currency: 'KRW',
-      mode: 'PAPER',
+      mode: config.factor.mode,
     },
   );
 
@@ -358,7 +366,7 @@ export function bootstrap() {
     factorBacktest,
     factorPortfolio,
     getPrices: (s) => client.getPrices(s),
-    factorPortfolioTopN: 10,
+    factorPortfolioTopN: config.factor.topN,
     rebalanceScheduler,
     performance: perf,
     account: accountService,
@@ -388,6 +396,9 @@ export async function main(): Promise<void> {
     client, haltSwitch, setActiveLiveBroker,
   } = bootstrap();
   console.log('auto-trading paper pipeline starting…');
+  console.log(
+    `[factor] topN=${config.factor.topN} notional=${config.factor.notional} mode=${config.factor.mode}`,
+  );
   console.log(
     `[daytrade] strategy id=${DAYTRADE_STRATEGY_ID}` +
     ` candidates=[${config.daytrade.symbols.join(',')}]` +

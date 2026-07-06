@@ -118,10 +118,11 @@ export class FactorPortfolioManager {
     // Alias to avoid shadowing by local `currentQty` variables inside the loop.
     const getQty = this.deps.currentQty;
 
-    // ── Step 2: Get ranking ─────────────────────────────────────────────────
-    const rankResult = await this.deps.ranking.rank(topN);
-    const topSymbols = rankResult.scored.map((s) => s.symbol);
-    const targetSet = new Set(topSymbols);
+    // ── Step 2: Get a deeper ranking pool for affordability-fill ───────────
+    // Request topN * 5 candidates so we can walk past unaffordable top-ranked
+    // symbols and still fill all topN slots with affordable ones.
+    const rankResult = await this.deps.ranking.rank(topN * 5);
+    const rankedSymbols = rankResult.scored.map((s) => s.symbol);
 
     const targets: TargetHolding[] = [];
     const skipped: { symbol: string; reason: string }[] = [];
@@ -130,18 +131,32 @@ export class FactorPortfolioManager {
 
     const perName = totalNotional / topN;
 
-    // ── Step 3: Compute target holdings ────────────────────────────────────
-    for (const symbol of topSymbols) {
+    // ── Step 3: Affordability-fill — walk ranked list, fill slots ──────────
+    // A slot is consumed only when floor(perName / price) >= 1.
+    // Symbols with no price   → skipped('no price'),    slot NOT consumed.
+    // Symbols with qty < 1    → skipped('unaffordable'), slot NOT consumed.
+    // We stop as soon as topN slots are filled (extra ranked symbols are not
+    // even inspected, so they never appear in `skipped`).
+    for (const symbol of rankedSymbols) {
+      if (targets.length >= topN) break;
+
       const price = this.deps.priceOf(symbol);
       if (price === undefined) {
         skipped.push({ symbol, reason: 'no price' });
         continue;
       }
       const targetQty = Math.floor(perName / price);
+      if (targetQty < 1) {
+        skipped.push({ symbol, reason: 'unaffordable' });
+        continue;
+      }
       const currentQty = getQty(symbol);
       const deltaQty = targetQty - currentQty;
       targets.push({ symbol, targetNotional: perName, price, targetQty, currentQty, deltaQty });
     }
+
+    // targetSet is derived from filled slots only (not the raw ranked list).
+    const targetSet = new Set(targets.map((t) => t.symbol));
 
     // ── Step 4: Identify exits ──────────────────────────────────────────────
     for (const symbol of this.deps.heldSymbols()) {
